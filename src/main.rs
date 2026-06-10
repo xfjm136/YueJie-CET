@@ -86,6 +86,23 @@ struct WeaknessResponse {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct DeleteHistoryPayload {
+    attempt_id: String,
+    question_set_id: String,
+    question_set_deleted: bool,
+    level: String,
+    question_type: String,
+    title: String,
+    topic: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DeleteHistoryResponse {
+    ok: bool,
+    deleted: DeleteHistoryPayload,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct VocabularyResponse {
     ok: bool,
     vocabulary: Vec<VocabularyEntry>,
@@ -408,6 +425,7 @@ enum Action {
     ReviewRedo,
     HistoryReview(usize),
     HistoryRedo(usize),
+    HistoryDelete(usize),
     HistorySelect(usize),
     SubmitPractice,
     PracticeBack,
@@ -764,6 +782,11 @@ impl BackendBridge {
         Ok(serde_json::from_value(value)?)
     }
 
+    fn delete_history(&self, attempt_id: &str) -> Result<DeleteHistoryResponse> {
+        let value = self.run_bridge(&["delete-history", "--attempt-id", attempt_id], None)?;
+        Ok(serde_json::from_value(value)?)
+    }
+
     fn review(&self, attempt_id: &str) -> Result<ReviewResponse> {
         let value = self.run_bridge(&["review", "--attempt-id", attempt_id], None)?;
         Ok(serde_json::from_value(value)?)
@@ -960,6 +983,7 @@ struct YueJieRustApp {
     vocabulary: Vec<VocabularyEntry>,
     vocabulary_index: usize,
     settings_focus: usize,
+    pending_history_delete_attempt_id: Option<String>,
     should_quit: bool,
 }
 
@@ -1001,6 +1025,7 @@ impl YueJieRustApp {
             vocabulary: Vec::new(),
             vocabulary_index: 0,
             settings_focus: 0,
+            pending_history_delete_attempt_id: None,
             should_quit: false,
         })
     }
@@ -1359,12 +1384,19 @@ impl YueJieRustApp {
             return Ok(());
         }
         match key.code {
-            KeyCode::Up => self.history_index = self.history_index.saturating_sub(1),
+            KeyCode::Up => {
+                self.history_index = self.history_index.saturating_sub(1);
+                self.pending_history_delete_attempt_id = None;
+            }
             KeyCode::Down => {
-                self.history_index = (self.history_index + 1).min(self.history.len() - 1)
+                self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                self.pending_history_delete_attempt_id = None;
             }
             KeyCode::Enter => self.perform_action(Action::HistoryReview(self.history_index))?,
             KeyCode::Char('r') => self.perform_action(Action::HistoryRedo(self.history_index))?,
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.perform_action(Action::HistoryDelete(self.history_index))?
+            }
             _ => {}
         }
         Ok(())
@@ -1547,9 +1579,47 @@ impl YueJieRustApp {
                     self.screen = Screen::Practice;
                 }
             }
+            Action::HistoryDelete(index) => {
+                if let Some(item) = self.history.get(index).cloned() {
+                    self.history_index = index.min(self.history.len().saturating_sub(1));
+                    if self.pending_history_delete_attempt_id.as_deref() != Some(&item.attempt_id) {
+                        self.pending_history_delete_attempt_id = Some(item.attempt_id.clone());
+                        self.status_line = String::from(
+                            "再次按 D 或点击“删除记录”确认删除；对应词汇、正确率和薄弱项会一起重算。",
+                        );
+                        return Ok(());
+                    }
+
+                    let response = self.backend.delete_history(&item.attempt_id)?;
+                    self.pending_history_delete_attempt_id = None;
+                    self.refresh_overview()?;
+                    self.history = self.backend.history()?.history;
+                    self.history_index =
+                        self.history_index.min(self.history.len().saturating_sub(1));
+                    self.weakness.clear();
+                    self.vocabulary.clear();
+                    self.review = None;
+                    self.review_detail_scroll = 0;
+                    self.status_line = if self.history.is_empty() {
+                        String::from("记录已删除，历史为空；相关统计、词汇和薄弱项已重算。")
+                    } else if response.deleted.question_set_deleted {
+                        format!(
+                            "已删除记录「{}」，题集与关联词汇统计已移除并完成重算。",
+                            response.deleted.title
+                        )
+                    } else {
+                        format!(
+                            "已删除记录「{}」，统计、词汇与薄弱项已完成重算。",
+                            response.deleted.title
+                        )
+                    };
+                }
+            }
             Action::HistorySelect(index) => {
                 self.history_index = index.min(self.history.len().saturating_sub(1));
-                self.status_line = String::from("已选中历史记录，Enter 查看解析，R 重新作答。");
+                self.pending_history_delete_attempt_id = None;
+                self.status_line =
+                    String::from("已选中历史记录，Enter 查看解析，R 重新作答，D 删除记录。");
             }
             Action::SubmitPractice => self.submit_practice()?,
             Action::PracticeBack => {
@@ -1773,9 +1843,11 @@ impl YueJieRustApp {
     fn open_history(&mut self) -> Result<()> {
         self.history = self.backend.history()?.history;
         self.history_index = 0;
+        self.pending_history_delete_attempt_id = None;
         self.screen = Screen::History;
-        self.status_line =
-            String::from("上下方向键切换，Enter 查看解析，R 重新作答，滚轮可快速浏览。");
+        self.status_line = String::from(
+            "上下方向键切换，Enter 查看解析，R 重新作答，D 删除记录，滚轮可快速浏览。",
+        );
         Ok(())
     }
 
@@ -2917,7 +2989,7 @@ impl YueJieRustApp {
                     Line::from(format!("表现评估：{}", accuracy_band(selected.accuracy))),
                     Line::from(format!("题集 ID：{}", selected.question_set_id)),
                     Line::from(""),
-                    Line::from("Enter 查看完整复盘，R 可直接重新作答本题。"),
+                    Line::from("Enter 查看完整复盘，R 重新作答，D 删除该记录。"),
                 ]))
                 .wrap(Wrap { trim: false })
                 .block(simple_block("当前记录", palette)),
@@ -2928,9 +3000,10 @@ impl YueJieRustApp {
         let buttons = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 4),
             ])
             .split(chunks[3]);
         self.draw_action_button(
@@ -2952,6 +3025,14 @@ impl YueJieRustApp {
         self.draw_action_button(
             frame,
             buttons[2],
+            palette,
+            "删除记录",
+            false,
+            Action::HistoryDelete(self.history_index),
+        );
+        self.draw_action_button(
+            frame,
+            buttons[3],
             palette,
             "返回",
             false,

@@ -232,6 +232,15 @@ def command_history(args: argparse.Namespace) -> None:
     _success(history=runtime.stats_service.list_history(limit=args.limit))
 
 
+def command_delete_history(args: argparse.Namespace) -> None:
+    runtime = build_runtime()
+    try:
+        deleted = runtime.attempt_service.delete_attempt_history(args.attempt_id)
+    except ValueError:
+        _failure("attempt not found", details=args.attempt_id)
+    _success(deleted=deleted)
+
+
 def command_review(args: argparse.Namespace) -> None:
     runtime = build_runtime()
     bundle = runtime.db.get_attempt_bundle(args.attempt_id)
@@ -310,6 +319,10 @@ def build_parser() -> argparse.ArgumentParser:
     history = subparsers.add_parser("history")
     history.add_argument("--limit", type=int, default=30)
     history.set_defaults(func=command_history)
+
+    delete_history = subparsers.add_parser("delete-history")
+    delete_history.add_argument("--attempt-id", required=True)
+    delete_history.set_defaults(func=command_delete_history)
 
     review = subparsers.add_parser("review")
     review.add_argument("--attempt-id", required=True)

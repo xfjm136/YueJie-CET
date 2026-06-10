@@ -164,6 +164,42 @@ class Database:
                 ),
             )
 
+    def delete_attempt_history(self, attempt_id: str) -> dict[str, Any] | None:
+        with self.managed_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT a.id AS attempt_id, a.question_set_id, q.level, q.question_type, q.title, q.topic
+                FROM attempts a
+                JOIN question_sets q ON q.id = a.question_set_id
+                WHERE a.id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+            if not row:
+                return None
+
+            question_set_id = row["question_set_id"]
+            conn.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS total FROM attempts WHERE question_set_id = ?",
+                (question_set_id,),
+            ).fetchone()
+            question_set_deleted = False
+            if int(remaining["total"]) == 0:
+                conn.execute("DELETE FROM question_sets WHERE id = ?", (question_set_id,))
+                question_set_deleted = True
+
+            self._rebuild_vocabulary_items_from_attempts(conn)
+            return {
+                "attempt_id": row["attempt_id"],
+                "question_set_id": question_set_id,
+                "question_set_deleted": question_set_deleted,
+                "level": row["level"],
+                "question_type": row["question_type"],
+                "title": row["title"],
+                "topic": row["topic"],
+            }
+
     def list_history(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.managed_connection() as conn:
             rows = conn.execute(
@@ -242,11 +278,67 @@ class Database:
                             item.level_hint,
                             item.meaning_zh,
                             item.example_en,
-                            item.frequency_score,
+                            max(item.frequency_score, 1),
                             item.error_related_score,
                             timestamp,
                         ),
                     )
+
+    def _rebuild_vocabulary_items_from_attempts(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DELETE FROM vocabulary_items")
+        rows = conn.execute(
+            """
+            SELECT a.submitted_at, q.payload_json
+            FROM attempts a
+            JOIN question_sets q ON q.id = a.question_set_id
+            ORDER BY a.submitted_at ASC
+            """
+        ).fetchall()
+        aggregates: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            question_set = QuestionSet.from_dict(json.loads(row["payload_json"]))
+            seen_at = row["submitted_at"]
+            for item in question_set.vocabulary:
+                entry = aggregates.get(item.lemma)
+                if entry is None:
+                    aggregates[item.lemma] = {
+                        "lemma": item.lemma,
+                        "surface_form": item.surface_form,
+                        "level_hint": item.level_hint,
+                        "meaning_zh": item.meaning_zh,
+                        "example_en": item.example_en,
+                        "frequency_score": max(int(item.frequency_score), 1),
+                        "error_related_score": int(item.error_related_score),
+                        "last_seen_at": seen_at,
+                    }
+                else:
+                    entry["surface_form"] = item.surface_form
+                    entry["level_hint"] = item.level_hint
+                    entry["meaning_zh"] = item.meaning_zh
+                    entry["example_en"] = item.example_en
+                    entry["frequency_score"] += max(int(item.frequency_score), 1)
+                    entry["error_related_score"] += int(item.error_related_score)
+                    entry["last_seen_at"] = seen_at
+
+        for item in aggregates.values():
+            conn.execute(
+                """
+                INSERT INTO vocabulary_items (
+                    lemma, surface_form, level_hint, meaning_zh, example_en,
+                    frequency_score, error_related_score, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["lemma"],
+                    item["surface_form"],
+                    item["level_hint"],
+                    item["meaning_zh"],
+                    item["example_en"],
+                    item["frequency_score"],
+                    item["error_related_score"],
+                    item["last_seen_at"],
+                ),
+            )
 
     def list_vocabulary(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.managed_connection() as conn:
@@ -287,6 +379,22 @@ class Database:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
+
+    def clear_weakness_snapshots(self) -> None:
+        with self.managed_connection() as conn:
+            conn.execute("DELETE FROM weakness_snapshots")
+
+    def attempt_level_type_pairs(self) -> list[tuple[Level, QuestionType]]:
+        with self.managed_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT q.level, q.question_type
+                FROM attempts a
+                JOIN question_sets q ON q.id = a.question_set_id
+                ORDER BY q.level, q.question_type
+                """
+            ).fetchall()
+        return [(Level(row["level"]), QuestionType(row["question_type"])) for row in rows]
 
     def list_weakness_snapshots(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.managed_connection() as conn:

@@ -28,3 +28,9 @@ class AttemptService:
         self.weakness_service.refresh_snapshot(question_set.level, question_set.question_type)
         return result
 
+    def delete_attempt_history(self, attempt_id: str) -> dict[str, str | bool]:
+        deleted = self.db.delete_attempt_history(attempt_id)
+        if deleted is None:
+            raise ValueError("attempt not found")
+        self.weakness_service.rebuild_snapshots()
+        return deleted

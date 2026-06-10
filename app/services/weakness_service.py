@@ -12,6 +12,11 @@ class WeaknessService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
+    def rebuild_snapshots(self) -> None:
+        self.db.clear_weakness_snapshots()
+        for level, question_type in self.db.attempt_level_type_pairs():
+            self.refresh_snapshot(level, question_type)
+
     def refresh_snapshot(
         self,
         level: Level,
@@ -58,4 +63,3 @@ class WeaknessService:
             "based_on_attempt_count": len(payloads),
             "dimensions": dimensions,
         }
-
