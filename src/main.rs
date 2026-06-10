@@ -455,7 +455,8 @@ impl TypeChoice {
             Self::Writing => "Part I",
             Self::BankedCloze => "Section A",
             Self::LongReading => "Section B",
-            Self::Careful1 | Self::Careful2 => "Section C",
+            Self::Careful1 => "Section C",
+            Self::Careful2 => "Section D",
             Self::Translation => "Part IV",
         }
     }
@@ -1412,6 +1413,7 @@ impl YueJieRustApp {
     }
 
     fn handle_type_key(&mut self, key: KeyEvent) -> Result<()> {
+        let max_index = TypeChoice::all().len().saturating_sub(1);
         match key.code {
             KeyCode::Left => {
                 if self.type_index % 2 == 1 {
@@ -1419,7 +1421,7 @@ impl YueJieRustApp {
                 }
             }
             KeyCode::Right => {
-                if self.type_index % 2 == 0 {
+                if self.type_index % 2 == 0 && self.type_index < max_index {
                     self.type_index += 1;
                 }
             }
@@ -1429,7 +1431,7 @@ impl YueJieRustApp {
                 }
             }
             KeyCode::Down => {
-                if self.type_index <= 1 {
+                if self.type_index + 2 <= max_index {
                     self.type_index += 2;
                 }
             }
@@ -2609,12 +2611,6 @@ impl YueJieRustApp {
             .map(|task| task.started_at.elapsed().as_secs())
             .unwrap_or(0);
         let active_index = generation_step_index(&self.generation_phase);
-        let pulse = (((self.generating_tick % 14) + 2) as f64 / 18.0).min(0.82);
-        let ratio = if self.generation_phase == "done" {
-            1.0
-        } else {
-            ((active_index as f64) / 5.0 + pulse / 5.0).clamp(0.08, 0.98)
-        };
         let steps = [
             ("准备环境", "加载配置、数据库和薄弱项"),
             ("锁定规范", "整理四六级词数、题量与题型约束"),
@@ -2642,11 +2638,20 @@ impl YueJieRustApp {
         .block(simple_block("", palette));
         frame.render_widget(header, chunks[0]);
 
+        let scan = generation_scan_frame(self.generating_tick);
+        let phase_marker = generation_phase_marker(self.generating_tick);
         frame.render_widget(
-            Gauge::default()
-                .block(simple_block("整体进度", palette))
-                .gauge_style(Style::default().fg(palette.success).bg(palette.panel_alt))
-                .ratio(ratio),
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("生成脉冲", title_style(palette))),
+                Line::from(format!(
+                    "{}  {}  {}",
+                    phase_marker,
+                    format_generation_phase(&self.generation_phase),
+                    scan
+                )),
+            ]))
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
             chunks[1],
         );
 
@@ -2679,13 +2684,14 @@ impl YueJieRustApp {
             Line::from(Span::styled("阶段看板", title_style(palette))),
             Line::from(""),
         ];
+        let active_marker = generation_phase_marker(self.generating_tick);
         for (index, (title, detail)) in steps.iter().enumerate() {
             let marker = if index < active_index {
-                "[OK]"
+                "●"
             } else if index == active_index {
-                "[>>]"
+                active_marker
             } else {
-                "[  ]"
+                "○"
             };
             step_lines.push(Line::from(format!("{} {}  {}", marker, title, detail)));
         }
@@ -2698,11 +2704,8 @@ impl YueJieRustApp {
             left[1],
         );
 
-        let spinner_frames = [
-            "[=     ]", "[==    ]", "[===   ]", "[ ===  ]", "[  === ]", "[   ===]", "[    ==]",
-            "[     =]",
-        ];
-        let spinner = spinner_frames[self.generating_tick % spinner_frames.len()];
+        let orbit = generation_orbit_frame(self.generating_tick);
+        let wave = generation_wave_frame(self.generating_tick);
         let wait_hint = if elapsed >= 90 {
             "等待较久：当前更可能是远端模型仍在生成，不是前端失去响应。"
         } else if elapsed >= 45 {
@@ -2712,14 +2715,15 @@ impl YueJieRustApp {
         };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(Span::styled("生成引擎", title_style(palette))),
+                Line::from(Span::styled("AI 推理中", title_style(palette))),
                 Line::from(format!(
                     "{}  {}",
-                    spinner,
+                    orbit,
                     format_generation_phase(&self.generation_phase)
                 )),
+                Line::from(format!("{}  正在组合题面、选项、解析与词汇整理", wave)),
                 Line::from(wait_hint),
-                Line::from("生成时间较长时，通常处于正式出题、修复或远端排队阶段。"),
+                Line::from("实时心跳会持续刷新状态，长时间等待通常发生在远端生成与校验阶段。"),
             ]))
             .wrap(Wrap { trim: false })
             .block(simple_block("", palette)),
@@ -2857,16 +2861,21 @@ impl YueJieRustApp {
         let Some(practice) = self.practice.clone() else {
             return;
         };
-        let outer = centered_rect(76, 72, area);
+        let outer = centered_rect(82, 96, area);
+        let score_card_height = if result.subjective_evaluation.is_some() {
+            10
+        } else {
+            9
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4),
-                Constraint::Length(8),
+                Constraint::Length(score_card_height),
                 Constraint::Length(5),
-                Constraint::Length(7),
-                Constraint::Length(7),
-                Constraint::Length(5),
+                Constraint::Min(6),
+                Constraint::Length(6),
+                Constraint::Length(4),
                 Constraint::Length(1),
             ])
             .split(outer);
@@ -5453,8 +5462,8 @@ fn format_question_group_label(question_type: &str, slot: Option<i32>) -> String
         ("writing", _) => "Part I".to_string(),
         ("banked_cloze", _) => "Section A".to_string(),
         ("long_reading", _) => "Section B".to_string(),
-        ("careful_reading", Some(1)) => "Section C-1".to_string(),
-        ("careful_reading", Some(2)) => "Section C-2".to_string(),
+        ("careful_reading", Some(1)) => "Section C".to_string(),
+        ("careful_reading", Some(2)) => "Section D".to_string(),
         ("careful_reading", _) => "Section C".to_string(),
         ("translation", _) => "Part IV".to_string(),
         _ => "Reading Set".to_string(),
@@ -5604,6 +5613,40 @@ fn mini_ratio_bar(ratio: f64, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
 }
 
+fn generation_phase_marker(tick: usize) -> &'static str {
+    const MARKERS: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    MARKERS[tick % MARKERS.len()]
+}
+
+fn generation_orbit_frame(tick: usize) -> &'static str {
+    const FRAMES: [&str; 6] = ["◜◎◝", "◠◎◡", "◝◎◜", "◡◎◠", "◟◎◞", "◠◎◡"];
+    FRAMES[tick % FRAMES.len()]
+}
+
+fn generation_wave_frame(tick: usize) -> &'static str {
+    const FRAMES: [&str; 6] = [
+        "▁▃▅▇▅▃▁",
+        "▃▅▇▅▃▁▃",
+        "▅▇▅▃▁▃▅",
+        "▇▅▃▁▃▅▇",
+        "▅▃▁▃▅▇▅",
+        "▃▁▃▅▇▅▃",
+    ];
+    FRAMES[tick % FRAMES.len()]
+}
+
+fn generation_scan_frame(tick: usize) -> &'static str {
+    const FRAMES: [&str; 6] = [
+        "· · ◆ · ·",
+        "· ◆ · ◆ ·",
+        "◆ · · · ◆",
+        "· ◆ · ◆ ·",
+        "· · ◆ · ·",
+        "· ◇ ◆ ◇ ·",
+    ];
+    FRAMES[tick % FRAMES.len()]
+}
+
 fn build_skill_summary_lines(results: &[AttemptQuestionResult]) -> Vec<Line<'static>> {
     let mut stats: HashMap<String, (usize, usize)> = HashMap::new();
     for item in results {
@@ -5666,7 +5709,7 @@ fn timer_glyphs() -> HashMap<char, [&'static str; 5]> {
         ('1', [" ╻ ", " ┃ ", " ┃ ", " ┃ ", " ╹ "]),
         ('2', ["┏━┓", "  ┃", "┏━┛", "┃  ", "┗━┛"]),
         ('3', ["┏━┓", "  ┃", " ━┫", "  ┃", "┗━┛"]),
-        ('4', ["┃ ┃", "┃ ┃", "┣━┫", "  ┃", "  ┃"]),
+        ('4', ["   ", "┃ ┃", "┣━┫", "  ┃", "  ┃"]),
         ('5', ["┏━┓", "┃  ", "┗━┓", "  ┃", "┗━┛"]),
         ('6', ["┏━┓", "┃  ", "┣━┓", "┃ ┃", "┗━┛"]),
         ('7', ["┏━┓", "  ┃", "  ┃", "  ┃", "  ┃"]),
@@ -5733,8 +5776,15 @@ mod tests {
         );
         assert_eq!(
             format_question_group_label("careful_reading", Some(2)),
-            "Section C-2"
+            "Section D"
         );
+    }
+
+    #[test]
+    fn timer_digit_four_uses_lowered_seven_segment_shape() {
+        let glyphs = timer_glyphs();
+        assert_eq!(glyphs.get(&'4').unwrap()[0], "   ");
+        assert_eq!(glyphs.get(&'4').unwrap()[2], "┣━┫");
     }
 
     #[test]
