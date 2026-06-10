@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import sys
+import threading
+import time
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +28,25 @@ def _failure(message: str, *, details: Any | None = None, exit_code: int = 1) ->
 
 def _emit_event(event: str, **payload: Any) -> None:
     print(json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
+
+
+def _heartbeat_message(phase: str, elapsed_total: int, elapsed_phase: int) -> str:
+    if phase in {"boot", "prepare"}:
+        return f"运行时仍在准备环境与本地数据，已等待 {elapsed_total} 秒。"
+    if phase == "blueprint":
+        return f"仍在整理四六级题面蓝图与难度约束，已等待 {elapsed_total} 秒。"
+    if phase in {"generate_request", "retry_generation"}:
+        return (
+            f"DeepSeek 正在生成题目正文、题干与解析，当前阶段已等待 {elapsed_phase} 秒，"
+            f"累计 {elapsed_total} 秒。"
+        )
+    if phase == "validate":
+        return f"正在校验 JSON 结构与 CET 规范细项，累计已等待 {elapsed_total} 秒。"
+    if phase == "repair":
+        return f"正在根据校验结果修复题目结构，当前阶段已等待 {elapsed_phase} 秒。"
+    if phase in {"save", "done"}:
+        return f"题目已接近完成，正在写入本地题库与词汇表，累计 {elapsed_total} 秒。"
+    return f"AI 生成流程仍在继续，累计已等待 {elapsed_total} 秒。"
 
 
 def _parse_level(raw: str) -> Level:
@@ -79,20 +101,85 @@ def command_generate(args: argparse.Namespace) -> None:
 def command_generate_live(args: argparse.Namespace) -> None:
     _emit_event("progress", phase="boot", message="正在加载运行时配置与本地题库。")
     runtime = build_runtime()
+    progress_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
 
     def on_progress(phase: str, message: str) -> None:
-        _emit_event("progress", phase=phase, message=message)
+        progress_queue.put((phase, message))
 
-    try:
-        question_set = runtime.question_service.generate_question_set(
-            level=args.level,
-            question_type=args.question_type,
-            slot=args.slot,
-            progress_callback=on_progress,
-        )
-    except Exception as exc:
-        _emit_event("error", error=str(exc))
-        raise SystemExit(1) from exc
+    def worker() -> None:
+        try:
+            question_set = runtime.question_service.generate_question_set(
+                level=args.level,
+                question_type=args.question_type,
+                slot=args.slot,
+                progress_callback=on_progress,
+            )
+        except Exception as exc:
+            result_queue.put(("error", exc))
+            return
+        result_queue.put(("result", question_set))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    current_phase = "boot"
+    phase_started_at = time.monotonic()
+    total_started_at = phase_started_at
+    next_heartbeat_at = total_started_at + 6
+
+    while True:
+        drained_progress = False
+        while True:
+            try:
+                phase, message = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained_progress = True
+            current_phase = phase
+            phase_started_at = time.monotonic()
+            next_heartbeat_at = phase_started_at + 6
+            _emit_event("progress", phase=phase, message=message)
+
+        try:
+            status, payload = result_queue.get(timeout=0.8)
+        except queue.Empty:
+            if not drained_progress:
+                now = time.monotonic()
+                if now >= next_heartbeat_at:
+                    _emit_event(
+                        "progress",
+                        phase=current_phase,
+                        message=_heartbeat_message(
+                            current_phase,
+                            int(now - total_started_at),
+                            int(now - phase_started_at),
+                        ),
+                    )
+                    next_heartbeat_at = now + 6
+            if thread.is_alive():
+                continue
+            thread.join(timeout=0.1)
+            if result_queue.empty():
+                _emit_event("error", error="生成线程已退出，但未返回结果。")
+                raise SystemExit(1)
+            continue
+
+        while True:
+            try:
+                phase, message = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            current_phase = phase
+            phase_started_at = time.monotonic()
+            _emit_event("progress", phase=phase, message=message)
+
+        if status == "error":
+            _emit_event("error", error=str(payload))
+            raise SystemExit(1) from payload
+
+        question_set = payload
+        break
 
     _emit_event("result", ok=True, question_set=question_set.to_dict())
 

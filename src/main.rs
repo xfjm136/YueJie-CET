@@ -1049,11 +1049,7 @@ impl YueJieRustApp {
                             }
                             self.generation_phase = phase;
                             self.generation_message = message.clone();
-                            self.generation_log.push(message);
-                            if self.generation_log.len() > 8 {
-                                let overflow = self.generation_log.len() - 8;
-                                self.generation_log.drain(0..overflow);
-                            }
+                            self.push_generation_log(message);
                         }
                         GenerationMessage::Finished { job_id, result } => {
                             if job_id != active_job_id {
@@ -1730,6 +1726,22 @@ impl YueJieRustApp {
         Ok(())
     }
 
+    fn push_generation_log(&mut self, message: String) {
+        if is_generation_heartbeat(&message) {
+            if let Some(last) = self.generation_log.last_mut() {
+                if is_generation_heartbeat(last) {
+                    *last = message;
+                    return;
+                }
+            }
+        }
+        self.generation_log.push(message);
+        if self.generation_log.len() > 8 {
+            let overflow = self.generation_log.len() - 8;
+            self.generation_log.drain(0..overflow);
+        }
+    }
+
     fn submit_practice(&mut self) -> Result<()> {
         if let Some(practice) = &mut self.practice {
             let unanswered = practice.unanswered_count();
@@ -2301,11 +2313,11 @@ impl YueJieRustApp {
             )),
             Line::from(Span::styled(
                 format!(
-                    "{} · {} · {} · 已等待 {:02}s",
+                    "{} · {} · {} · 已等待 {}",
                     self.selected_level.label(),
                     self.selected_type.section_label(),
                     self.selected_type.label(),
-                    elapsed
+                    seconds_to_text(elapsed as i64)
                 ),
                 Style::default().fg(palette.muted),
             )),
@@ -2385,7 +2397,11 @@ impl YueJieRustApp {
         frame.render_widget(
             Paragraph::new(Text::from(vec![
                 Line::from(Span::styled("生成引擎", title_style(palette))),
-                Line::from(format!("{}  {}", spinner, self.generation_phase)),
+                Line::from(format!(
+                    "{}  {}",
+                    spinner,
+                    format_generation_phase(&self.generation_phase)
+                )),
                 Line::from(wait_hint),
                 Line::from("生成时间较长时，通常处于正式出题、修复或远端排队阶段。"),
             ]))
@@ -4798,6 +4814,26 @@ fn generation_step_index(phase: &str) -> usize {
     }
 }
 
+fn format_generation_phase(phase: &str) -> &'static str {
+    match phase {
+        "boot" => "启动环境",
+        "prepare" => "读取数据",
+        "blueprint" => "锁定蓝图",
+        "generate_request" => "正式出题",
+        "retry_generation" => "重新生成",
+        "validate" => "规范校验",
+        "repair" => "结构修复",
+        "validated" => "校验通过",
+        "save" => "保存结果",
+        "done" => "生成完成",
+        _ => "处理中",
+    }
+}
+
+fn is_generation_heartbeat(message: &str) -> bool {
+    message.contains("已等待") || message.contains("仍在")
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -5169,5 +5205,21 @@ mod tests {
             wrapped_block_height("a very long option that should wrap", 8, 2, 4),
             4
         );
+    }
+
+    #[test]
+    fn generation_phase_labels_are_human_readable() {
+        assert_eq!(format_generation_phase("generate_request"), "正式出题");
+        assert_eq!(format_generation_phase("repair"), "结构修复");
+    }
+
+    #[test]
+    fn generation_heartbeat_detection_catches_wait_messages() {
+        assert!(is_generation_heartbeat(
+            "DeepSeek 正在生成题目，已等待 36 秒。"
+        ));
+        assert!(!is_generation_heartbeat(
+            "题目已通过校验，正在保存题集与词汇。"
+        ));
     }
 }
