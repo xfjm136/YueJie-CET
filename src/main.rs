@@ -217,6 +217,16 @@ struct QuestionSet {
     vocabulary: Vec<VocabularyItem>,
     #[serde(default)]
     shared_options: Vec<String>,
+    #[serde(default)]
+    task_prompt: String,
+    #[serde(default)]
+    reference_answer: String,
+    #[serde(default)]
+    rubric_focus: Vec<String>,
+    #[serde(default)]
+    min_response_words: i32,
+    #[serde(default)]
+    max_response_words: i32,
     slot: Option<i32>,
     word_count: i32,
     created_at: String,
@@ -235,6 +245,50 @@ struct AttemptQuestionResult {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct ScoreDimension {
+    name: String,
+    score: f64,
+    max_score: f64,
+    feedback_zh: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct WordCorrection {
+    original: String,
+    corrected: String,
+    #[serde(default)]
+    meaning_zh: String,
+    reason_zh: String,
+    skill_tag: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SentenceRewrite {
+    original_sentence: String,
+    revised_sentence: String,
+    reason_zh: String,
+    skill_tag: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SubjectiveEvaluation {
+    score_15: f64,
+    estimated_reported_score: f64,
+    grade_band: String,
+    overall_feedback_zh: String,
+    #[serde(default)]
+    score_dimensions: Vec<ScoreDimension>,
+    #[serde(default)]
+    wrong_words: Vec<WordCorrection>,
+    #[serde(default)]
+    sentence_rewrites: Vec<SentenceRewrite>,
+    #[serde(default)]
+    high_score_version: String,
+    #[serde(default)]
+    weakness_tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct AttemptResult {
     id: String,
     question_set_id: String,
@@ -245,6 +299,8 @@ struct AttemptResult {
     summary: String,
     recommendations: Vec<String>,
     question_results: Vec<AttemptQuestionResult>,
+    #[serde(default)]
+    subjective_evaluation: Option<SubjectiveEvaluation>,
     created_at: String,
 }
 
@@ -338,15 +394,19 @@ enum TypeChoice {
     LongReading,
     Careful1,
     Careful2,
+    Writing,
+    Translation,
 }
 
 impl TypeChoice {
-    fn all() -> [TypeChoice; 4] {
+    fn all() -> [TypeChoice; 6] {
         [
             Self::BankedCloze,
             Self::LongReading,
             Self::Careful1,
             Self::Careful2,
+            Self::Writing,
+            Self::Translation,
         ]
     }
 
@@ -356,6 +416,8 @@ impl TypeChoice {
             Self::LongReading => "long_reading",
             Self::Careful1 => "careful_reading:1",
             Self::Careful2 => "careful_reading:2",
+            Self::Writing => "writing",
+            Self::Translation => "translation",
         }
     }
 
@@ -364,6 +426,8 @@ impl TypeChoice {
             Self::BankedCloze => "banked_cloze",
             Self::LongReading => "long_reading",
             Self::Careful1 | Self::Careful2 => "careful_reading",
+            Self::Writing => "writing",
+            Self::Translation => "translation",
         }
     }
 
@@ -381,14 +445,18 @@ impl TypeChoice {
             Self::LongReading => "长篇阅读",
             Self::Careful1 => "仔细阅读 1",
             Self::Careful2 => "仔细阅读 2",
+            Self::Writing => "写作",
+            Self::Translation => "翻译",
         }
     }
 
     fn section_label(self) -> &'static str {
         match self {
+            Self::Writing => "Part I",
             Self::BankedCloze => "Section A",
             Self::LongReading => "Section B",
             Self::Careful1 | Self::Careful2 => "Section C",
+            Self::Translation => "Part IV",
         }
     }
 
@@ -397,6 +465,7 @@ impl TypeChoice {
             Self::BankedCloze => "建议 8 分钟",
             Self::LongReading => "建议 15 分钟",
             Self::Careful1 | Self::Careful2 => "建议 12 分钟",
+            Self::Writing | Self::Translation => "建议 30 分钟",
         }
     }
 
@@ -406,6 +475,8 @@ impl TypeChoice {
             Self::LongReading => "信息定位、同义改写、段落匹配",
             Self::Careful1 => "标准仔细阅读，覆盖主旨到细节",
             Self::Careful2 => "更强调推断、态度与语境词义",
+            Self::Writing => "立意、结构、语法与词汇表达",
+            Self::Translation => "信息准确、语言自然、语法稳定",
         }
     }
 }
@@ -825,14 +896,20 @@ struct PracticeState {
     selected_question: usize,
     passage_scroll: u16,
     choice_cursor: usize,
+    subjective_cursor: usize,
+    subjective_scroll: u16,
     submit_confirm_pending: bool,
 }
 
 impl PracticeState {
     fn new(question_set: QuestionSet, is_history_retry: bool) -> Self {
         let mut answers = HashMap::new();
-        for question in &question_set.questions {
-            answers.insert(question.id.clone(), String::new());
+        if question_set.questions.is_empty() {
+            answers.insert("response_text".to_string(), String::new());
+        } else {
+            for question in &question_set.questions {
+                answers.insert(question.id.clone(), String::new());
+            }
         }
         Self {
             question_set,
@@ -844,11 +921,20 @@ impl PracticeState {
             selected_question: 0,
             passage_scroll: 0,
             choice_cursor: 0,
+            subjective_cursor: 0,
+            subjective_scroll: 0,
             submit_confirm_pending: false,
         }
     }
 
     fn answered_count(&self) -> usize {
+        if self.question_set.questions.is_empty() {
+            return usize::from(
+                self.answers
+                    .get("response_text")
+                    .is_some_and(|value| !value.trim().is_empty()),
+            );
+        }
         self.answers
             .values()
             .filter(|value| !value.is_empty())
@@ -860,6 +946,13 @@ impl PracticeState {
     }
 
     fn unanswered_count(&self) -> usize {
+        if self.question_set.questions.is_empty() {
+            return usize::from(
+                self.answers
+                    .get("response_text")
+                    .is_none_or(|value| value.trim().is_empty()),
+            );
+        }
         self.question_set
             .questions
             .len()
@@ -867,6 +960,9 @@ impl PracticeState {
     }
 
     fn available_labels(&self) -> Vec<String> {
+        if self.question_set.questions.is_empty() {
+            return vec![];
+        }
         if self.question_set.question_type == "banked_cloze" {
             return self
                 .question_set
@@ -890,7 +986,9 @@ impl PracticeState {
     }
 
     fn sync_choice_cursor_to_current_answer(&mut self) {
-        if self.question_set.question_type == "banked_cloze" {
+        if self.question_set.questions.is_empty()
+            || self.question_set.question_type == "banked_cloze"
+        {
             return;
         }
         let qid = self.question_set.questions[self.selected_question]
@@ -909,6 +1007,9 @@ impl PracticeState {
 
     fn assign_answer(&mut self, answer: String) {
         self.submit_confirm_pending = false;
+        if self.question_set.questions.is_empty() {
+            return;
+        }
         if self.question_set.question_type == "banked_cloze" {
             for value in self.answers.values_mut() {
                 if *value == answer {
@@ -942,6 +1043,12 @@ impl PracticeState {
 
     fn clear_current_answer(&mut self) {
         self.submit_confirm_pending = false;
+        if self.question_set.questions.is_empty() {
+            self.answers
+                .insert("response_text".to_string(), String::new());
+            self.subjective_cursor = 0;
+            return;
+        }
         if self.question_set.question_type == "banked_cloze" {
             let qid = self.question_set.questions[self.selected_blank].id.clone();
             self.answers.insert(qid, String::new());
@@ -951,6 +1058,76 @@ impl PracticeState {
             .id
             .clone();
         self.answers.insert(qid, String::new());
+    }
+
+    fn response_text(&self) -> &str {
+        self.answers
+            .get("response_text")
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    fn set_response_text(&mut self, text: String) {
+        self.answers.insert("response_text".to_string(), text);
+    }
+
+    fn insert_response_char(&mut self, ch: char) {
+        self.submit_confirm_pending = false;
+        let mut text = self.response_text().to_string();
+        let insert_at = self.subjective_cursor.min(text.len());
+        text.insert(insert_at, ch);
+        self.subjective_cursor = insert_at + ch.len_utf8();
+        self.set_response_text(text);
+    }
+
+    fn insert_response_newline(&mut self) {
+        self.insert_response_char('\n');
+    }
+
+    fn backspace_response_char(&mut self) {
+        self.submit_confirm_pending = false;
+        if self.subjective_cursor == 0 {
+            return;
+        }
+        let mut text = self.response_text().to_string();
+        let prev = text[..self.subjective_cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        text.replace_range(prev..self.subjective_cursor, "");
+        self.subjective_cursor = prev;
+        self.set_response_text(text);
+    }
+
+    fn move_response_cursor_left(&mut self) {
+        if self.subjective_cursor == 0 {
+            return;
+        }
+        self.subjective_cursor = self.response_text()[..self.subjective_cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+    }
+
+    fn move_response_cursor_right(&mut self) {
+        let text = self.response_text();
+        if self.subjective_cursor >= text.len() {
+            return;
+        }
+        if let Some(ch) = text[self.subjective_cursor..].chars().next() {
+            self.subjective_cursor =
+                (self.subjective_cursor + ch.len_utf8()).min(self.response_text().len());
+        }
+    }
+
+    fn move_response_cursor_home(&mut self) {
+        self.subjective_cursor = 0;
+    }
+
+    fn move_response_cursor_end(&mut self) {
+        self.subjective_cursor = self.response_text().len();
     }
 }
 
@@ -1273,6 +1450,35 @@ impl YueJieRustApp {
             return Ok(());
         }
         if let Some(practice) = &mut self.practice {
+            if practice.question_set.questions.is_empty() {
+                match key.code {
+                    KeyCode::Left => practice.move_response_cursor_left(),
+                    KeyCode::Right => practice.move_response_cursor_right(),
+                    KeyCode::Home => practice.move_response_cursor_home(),
+                    KeyCode::End => practice.move_response_cursor_end(),
+                    KeyCode::Up => {
+                        practice.subjective_scroll = practice.subjective_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        practice.subjective_scroll = practice.subjective_scroll.saturating_add(1);
+                    }
+                    KeyCode::Enter => practice.insert_response_newline(),
+                    KeyCode::Backspace => practice.backspace_response_char(),
+                    KeyCode::Delete => practice.clear_current_answer(),
+                    KeyCode::Tab => practice.insert_response_char(' '),
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        practice.insert_response_char(c);
+                    }
+                    KeyCode::PageUp => {
+                        practice.passage_scroll = practice.passage_scroll.saturating_sub(2);
+                    }
+                    KeyCode::PageDown => {
+                        practice.passage_scroll = practice.passage_scroll.saturating_add(2);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             match practice.question_set.question_type.as_str() {
                 "banked_cloze" => match key.code {
                     KeyCode::Left => {
@@ -1836,6 +2042,12 @@ impl YueJieRustApp {
 
     fn submit_practice(&mut self) -> Result<()> {
         if let Some(practice) = &mut self.practice {
+            if practice.question_set.questions.is_empty()
+                && practice.response_text().trim().is_empty()
+            {
+                self.status_line = String::from("写作/翻译作答区为空，请先输入内容后再提交。");
+                return Ok(());
+            }
             let unanswered = practice.unanswered_count();
             if unanswered > 0 && !practice.submit_confirm_pending {
                 practice.submit_confirm_pending = true;
@@ -1926,10 +2138,12 @@ impl YueJieRustApp {
             question_set.question_type.as_str(),
             question_set.slot.unwrap_or_default(),
         ) {
+            ("writing", _) => TypeChoice::Writing,
             ("banked_cloze", _) => TypeChoice::BankedCloze,
             ("long_reading", _) => TypeChoice::LongReading,
             ("careful_reading", 2) => TypeChoice::Careful2,
             ("careful_reading", _) => TypeChoice::Careful1,
+            ("translation", _) => TypeChoice::Translation,
             _ => TypeChoice::BankedCloze,
         };
         self.type_index = TypeChoice::all()
@@ -2316,6 +2530,7 @@ impl YueJieRustApp {
                 Constraint::Length(3),
                 Constraint::Length(11),
                 Constraint::Length(11),
+                Constraint::Length(11),
                 Constraint::Length(1),
             ])
             .split(outer);
@@ -2334,14 +2549,17 @@ impl YueJieRustApp {
         .block(simple_block("", palette));
         frame.render_widget(header, chunks[0]);
 
-        let rows = [chunks[1], chunks[2]];
-        for row_index in 0..2 {
+        let rows = [chunks[1], chunks[2], chunks[3]];
+        for row_index in 0..3 {
             let row_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
                 .split(rows[row_index]);
             for col_index in 0..2 {
                 let idx = row_index * 2 + col_index;
+                if idx >= TypeChoice::all().len() {
+                    continue;
+                }
                 let type_choice = TypeChoice::all()[idx];
                 let selected = self.type_index == idx;
                 let card = self
@@ -2371,7 +2589,7 @@ impl YueJieRustApp {
             }
         }
 
-        self.draw_status_line(frame, chunks[3], palette);
+        self.draw_status_line(frame, chunks[4], palette);
     }
 
     fn draw_generating(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
@@ -2537,22 +2755,33 @@ impl YueJieRustApp {
             .constraints([Constraint::Length(5), Constraint::Min(20)])
             .split(root);
         self.draw_practice_header(frame, chunks[0], palette, &practice);
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(24),
-                Constraint::Percentage(if practice.question_set.question_type == "long_reading" {
-                    52
-                } else {
-                    46
-                }),
-                Constraint::Min(34),
-            ])
-            .split(chunks[1]);
+        if practice.question_set.questions.is_empty() {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(24), Constraint::Min(60)])
+                .split(chunks[1]);
+            self.draw_practice_sidebar(frame, columns[0], palette, &practice);
+            self.draw_subjective_panel(frame, columns[1], palette, &practice);
+        } else {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(24),
+                    Constraint::Percentage(
+                        if practice.question_set.question_type == "long_reading" {
+                            52
+                        } else {
+                            46
+                        },
+                    ),
+                    Constraint::Min(34),
+                ])
+                .split(chunks[1]);
 
-        self.draw_practice_sidebar(frame, columns[0], palette, &practice);
-        self.draw_passage_panel(frame, columns[1], palette, &practice);
-        self.draw_answer_panel(frame, columns[2], palette, &practice);
+            self.draw_practice_sidebar(frame, columns[0], palette, &practice);
+            self.draw_passage_panel(frame, columns[1], palette, &practice);
+            self.draw_answer_panel(frame, columns[2], palette, &practice);
+        }
     }
 
     fn draw_practice_header(
@@ -2562,6 +2791,7 @@ impl YueJieRustApp {
         palette: Palette,
         practice: &PracticeState,
     ) {
+        let total_items = practice.question_set.questions.len().max(1);
         let parts = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
@@ -2587,7 +2817,11 @@ impl YueJieRustApp {
                     "主题：{} | 建议用时：{} | 题目数：{}",
                     practice.question_set.topic,
                     recommended_time_text(&practice.question_set.question_type),
-                    practice.question_set.questions.len()
+                    if practice.question_set.questions.is_empty() {
+                        1
+                    } else {
+                        practice.question_set.questions.len()
+                    }
                 )),
                 Line::from(if practice.submit_confirm_pending {
                     "当前仍有未作答题目，再次提交将按现有答案交卷。".to_string()
@@ -2605,15 +2839,13 @@ impl YueJieRustApp {
                     &format!(
                         "进度  {}/{}  · 未答 {}",
                         practice.answered_count(),
-                        practice.question_set.questions.len(),
+                        total_items,
                         practice.unanswered_count()
                     ),
                     palette,
                 ))
                 .gauge_style(Style::default().fg(palette.success).bg(palette.panel_alt))
-                .ratio(
-                    practice.answered_count() as f64 / practice.question_set.questions.len() as f64,
-                ),
+                .ratio(practice.answered_count() as f64 / total_items as f64),
             parts[1],
         );
     }
@@ -2639,7 +2871,35 @@ impl YueJieRustApp {
             ])
             .split(outer);
 
-        let accuracy_percent = (result.accuracy * 100.0).round().clamp(0.0, 99.0) as i64;
+        let subjective = result.subjective_evaluation.clone();
+        let headline_value = if let Some(evaluation) = &subjective {
+            evaluation.score_15.round().clamp(0.0, 99.0) as i64
+        } else {
+            (result.accuracy * 100.0).round().clamp(0.0, 99.0) as i64
+        };
+        let badge_label = if let Some(evaluation) = &subjective {
+            format!(
+                "{:.1}/15  · 估算 {:.1} 分",
+                evaluation.score_15, evaluation.estimated_reported_score
+            )
+        } else {
+            format!("{}%  正确率", headline_value)
+        };
+        let score_main = if let Some(evaluation) = &subjective {
+            format!("{:.1}/15", evaluation.score_15)
+        } else {
+            format!("{:.1}%", result.accuracy * 100.0)
+        };
+        let score_sub = if subjective.is_some() {
+            "按 CET 主观题标准估算".to_string()
+        } else {
+            format!("{}/{}", result.correct_count, result.total_count)
+        };
+        let status_main = if let Some(evaluation) = &subjective {
+            evaluation.grade_band.clone()
+        } else {
+            accuracy_band(result.accuracy).to_string()
+        };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
                 Line::from(Span::styled("本次作答已完成", title_style(palette))),
@@ -2651,7 +2911,11 @@ impl YueJieRustApp {
                             &practice.question_set.question_type,
                             practice.question_set.slot
                         ),
-                        accuracy_band(result.accuracy)
+                        if let Some(evaluation) = &subjective {
+                            evaluation.grade_band.clone()
+                        } else {
+                            accuracy_band(result.accuracy).to_string()
+                        }
                     ),
                     Style::default().fg(palette.muted),
                 )),
@@ -2663,10 +2927,10 @@ impl YueJieRustApp {
 
         frame.render_widget(
             Paragraph::new(Text::from({
-                let mut lines = big_timer_lines(&format!("{:02}", accuracy_percent));
+                let mut lines = big_timer_lines(&format!("{:02}", headline_value));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    format!("{}%  正确率", accuracy_percent),
+                    badge_label.clone(),
                     Style::default()
                         .fg(palette.accent)
                         .add_modifier(Modifier::BOLD),
@@ -2685,14 +2949,18 @@ impl YueJieRustApp {
                 Constraint::Ratio(1, 3),
                 Constraint::Ratio(1, 3),
             ])
-            .split(chunks[1]);
+            .split(chunks[2]);
         self.draw_metric_box(
             frame,
             stats[0],
             palette,
-            "正确率",
-            &format!("{:.1}%", result.accuracy * 100.0),
-            &format!("{}/{}", result.correct_count, result.total_count),
+            if subjective.is_some() {
+                "得分"
+            } else {
+                "正确率"
+            },
+            &score_main,
+            &score_sub,
             Some(result.accuracy),
         );
         self.draw_metric_box(
@@ -2709,7 +2977,7 @@ impl YueJieRustApp {
             stats[2],
             palette,
             "状态",
-            accuracy_band(result.accuracy),
+            &status_main,
             "查看完整解析",
             Some(0.62 + ((self.generating_tick % 8) as f64 / 20.0)),
         );
@@ -2725,7 +2993,12 @@ impl YueJieRustApp {
         };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(result.summary.clone()),
+                Line::from(
+                    subjective
+                        .as_ref()
+                        .map(|item| item.overall_feedback_zh.clone())
+                        .unwrap_or_else(|| result.summary.clone()),
+                ),
                 Line::from(""),
                 Line::from(format!(
                     "来源：{} / 模型：{} / 主题：{}",
@@ -3042,6 +3315,30 @@ impl YueJieRustApp {
             return;
         };
         let from_history = self.review_back_screen == Screen::History;
+        let subjective = bundle.result.subjective_evaluation.clone();
+        let review_headline = if let Some(evaluation) = &subjective {
+            format!("{:.1}/15", evaluation.score_15)
+        } else {
+            format!("{:.1}%", bundle.result.accuracy * 100.0)
+        };
+        let metric_main = if let Some(evaluation) = &subjective {
+            format!("{:.1}/15", evaluation.score_15)
+        } else {
+            format!("{:.1}%", bundle.result.accuracy * 100.0)
+        };
+        let metric_sub = if let Some(evaluation) = &subjective {
+            format!("估算 {:.1} 分", evaluation.estimated_reported_score)
+        } else {
+            format!(
+                "{}/{}",
+                bundle.result.correct_count, bundle.result.total_count
+            )
+        };
+        let metric_status = if let Some(evaluation) = &subjective {
+            evaluation.grade_band.clone()
+        } else {
+            accuracy_band(bundle.result.accuracy).to_string()
+        };
         let outer = centered_rect(96, 96, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -3066,7 +3363,7 @@ impl YueJieRustApp {
             Line::from(format!(
                 "{} · {} · {}",
                 format_question_label(&bundle.question_set.question_type, bundle.question_set.slot),
-                format!("{:.1}%", bundle.result.accuracy * 100.0),
+                review_headline,
                 seconds_to_text(bundle.result.duration_seconds)
             )),
         ]))
@@ -3086,12 +3383,13 @@ impl YueJieRustApp {
             frame,
             metrics[0],
             palette,
-            "正确率",
-            &format!("{:.1}%", bundle.result.accuracy * 100.0),
-            &format!(
-                "{}/{}",
-                bundle.result.correct_count, bundle.result.total_count
-            ),
+            if subjective.is_some() {
+                "得分"
+            } else {
+                "正确率"
+            },
+            &metric_main,
+            &metric_sub,
             Some(bundle.result.accuracy),
         );
         self.draw_metric_box(
@@ -3112,7 +3410,7 @@ impl YueJieRustApp {
             metrics[2],
             palette,
             "表现",
-            accuracy_band(bundle.result.accuracy),
+            &metric_status,
             "支持重新作答",
             None,
         );
@@ -3125,7 +3423,11 @@ impl YueJieRustApp {
             Paragraph::new(Text::from(vec![
                 Line::from(Span::styled("复盘摘要", title_style(palette))),
                 Line::from(""),
-                Line::from(bundle.question_set.analysis.overall_strategy.clone()),
+                Line::from(if let Some(evaluation) = &subjective {
+                    evaluation.overall_feedback_zh.clone()
+                } else {
+                    bundle.question_set.analysis.overall_strategy.clone()
+                }),
                 Line::from(""),
                 Line::from(bundle.question_set.analysis.overall_summary.clone()),
                 Line::from(""),
@@ -3159,10 +3461,29 @@ impl YueJieRustApp {
             .constraints([Constraint::Length(5), Constraint::Min(5)])
             .split(top[1]);
         let mut skill_lines = vec![
-            Line::from(Span::styled("技能表现", title_style(palette))),
+            Line::from(Span::styled(
+                if subjective.is_some() {
+                    "评分维度"
+                } else {
+                    "技能表现"
+                },
+                title_style(palette),
+            )),
             Line::from(""),
         ];
-        skill_lines.extend(build_skill_summary_lines(&bundle.result.question_results));
+        if let Some(evaluation) = &subjective {
+            for item in &evaluation.score_dimensions {
+                skill_lines.push(Line::from(format!(
+                    "{}  {}/{}",
+                    format_skill_label(&item.name),
+                    item.score,
+                    item.max_score
+                )));
+                skill_lines.push(Line::from(format!("  {}", item.feedback_zh)));
+            }
+        } else {
+            skill_lines.extend(build_skill_summary_lines(&bundle.result.question_results));
+        }
         frame.render_widget(
             Paragraph::new(Text::from(skill_lines))
                 .wrap(Wrap { trim: false })
@@ -3172,10 +3493,31 @@ impl YueJieRustApp {
         frame.render_widget(
             Paragraph::new(Text::from({
                 let mut lines = vec![
-                    Line::from(Span::styled("复盘词汇", title_style(palette))),
+                    Line::from(Span::styled(
+                        if subjective.is_some() {
+                            "错词纠正"
+                        } else {
+                            "复盘词汇"
+                        },
+                        title_style(palette),
+                    )),
                     Line::from(""),
                 ];
-                lines.extend(vocab_lines);
+                if let Some(evaluation) = &subjective {
+                    if evaluation.wrong_words.is_empty() {
+                        lines.push(Line::from("暂无明显错词。"));
+                    } else {
+                        for item in &evaluation.wrong_words {
+                            lines.push(Line::from(format!(
+                                "{} -> {} ({})",
+                                item.original, item.corrected, item.meaning_zh
+                            )));
+                            lines.push(Line::from(format!("  {}", item.reason_zh)));
+                        }
+                    }
+                } else {
+                    lines.extend(vocab_lines);
+                }
                 lines
             }))
             .wrap(Wrap { trim: false })
@@ -3184,17 +3526,46 @@ impl YueJieRustApp {
         );
 
         let mut lines = vec![
-            Line::from(Span::styled("逐题复盘", title_style(palette))),
+            Line::from(Span::styled(
+                if subjective.is_some() {
+                    "完整详解"
+                } else {
+                    "逐题复盘"
+                },
+                title_style(palette),
+            )),
             Line::from(""),
         ];
-        for (index, item) in bundle.result.question_results.iter().enumerate() {
-            lines.push(Line::from(format!(
-                "{}. 你的答案 {} / 正确答案 {}",
-                index + 1,
-                blank_or_value(&item.user_answer),
-                item.correct_answer
-            )));
-            lines.push(Line::from(format!("   {}", item.explanation)));
+        if let Some(evaluation) = &subjective {
+            if evaluation.sentence_rewrites.is_empty() {
+                lines.push(Line::from("暂无病句改写。"));
+            } else {
+                lines.push(Line::from("病句改写："));
+                lines.push(Line::from(""));
+                for item in &evaluation.sentence_rewrites {
+                    lines.push(Line::from(format!("原句：{}", item.original_sentence)));
+                    lines.push(Line::from(format!("改写：{}", item.revised_sentence)));
+                    lines.push(Line::from(format!("说明：{}", item.reason_zh)));
+                    lines.push(Line::from(""));
+                }
+            }
+            if !evaluation.high_score_version.trim().is_empty() {
+                lines.push(Line::from("高分版本："));
+                lines.push(Line::from(""));
+                for line in evaluation.high_score_version.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+            }
+        } else {
+            for (index, item) in bundle.result.question_results.iter().enumerate() {
+                lines.push(Line::from(format!(
+                    "{}. 你的答案 {} / 正确答案 {}",
+                    index + 1,
+                    blank_or_value(&item.user_answer),
+                    item.correct_answer
+                )));
+                lines.push(Line::from(format!("   {}", item.explanation)));
+            }
         }
         frame.render_widget(
             Paragraph::new(Text::from(lines))
@@ -3608,6 +3979,7 @@ impl YueJieRustApp {
             recommended_seconds_for_question_type(&practice.question_set.question_type);
         let pace_ratio =
             (practice.elapsed_seconds() as f64 / recommended_seconds.max(1) as f64).clamp(0.0, 1.0);
+        let total_items = practice.question_set.questions.len().max(1);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -3639,9 +4011,7 @@ impl YueJieRustApp {
         frame.render_widget(
             Gauge::default()
                 .block(simple_block("答题进度", palette))
-                .ratio(
-                    practice.answered_count() as f64 / practice.question_set.questions.len() as f64,
-                )
+                .ratio(practice.answered_count() as f64 / total_items as f64)
                 .gauge_style(Style::default().fg(palette.success).bg(palette.panel_alt)),
             progress_chunks[0],
         );
@@ -3712,6 +4082,68 @@ impl YueJieRustApp {
                 .alignment(Alignment::Center)
                 .block(simple_block("", palette)),
             chunks[5],
+        );
+    }
+
+    fn draw_subjective_panel(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: Palette,
+        practice: &PracticeState,
+    ) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(12), Constraint::Min(12)])
+            .split(area);
+
+        let mut prompt_lines = vec![
+            Line::from(Span::styled(
+                format!(
+                    "{}  {}",
+                    format_question_group_label(
+                        &practice.question_set.question_type,
+                        practice.question_set.slot,
+                    ),
+                    format_question_label(
+                        &practice.question_set.question_type,
+                        practice.question_set.slot,
+                    )
+                ),
+                title_style(palette),
+            )),
+            Line::from(practice.question_set.task_prompt.clone()),
+            Line::from(""),
+        ];
+        for line in &practice.question_set.passage.paragraphs {
+            prompt_lines.push(Line::from(line.clone()));
+        }
+        prompt_lines.push(Line::from(""));
+        prompt_lines.push(Line::from(format!(
+            "建议字数：{}-{} | 当前已输入约 {} 词",
+            practice.question_set.min_response_words,
+            practice.question_set.max_response_words,
+            practice.response_text().split_whitespace().count()
+        )));
+        frame.render_widget(
+            Paragraph::new(Text::from(prompt_lines))
+                .wrap(Wrap { trim: false })
+                .scroll((practice.passage_scroll, 0))
+                .block(simple_block("试卷题面", palette)),
+            chunks[0],
+        );
+
+        let response = if practice.response_text().trim().is_empty() {
+            "在这里输入你的作文或译文。\n\nCtrl+S 提交，Enter 换行，Backspace 删除。".to_string()
+        } else {
+            practice.response_text().to_string()
+        };
+        frame.render_widget(
+            Paragraph::new(response)
+                .wrap(Wrap { trim: false })
+                .scroll((practice.subjective_scroll, 0))
+                .block(simple_block("答题卡", palette)),
+            chunks[1],
         );
     }
 
@@ -5005,28 +5437,35 @@ fn format_level_label(level: &str) -> &'static str {
 
 fn format_question_label(question_type: &str, slot: Option<i32>) -> String {
     match (question_type, slot) {
+        ("writing", _) => "写作".to_string(),
         ("banked_cloze", _) => "选词填空".to_string(),
         ("long_reading", _) => "长篇阅读".to_string(),
         ("careful_reading", Some(1)) => "仔细阅读 1".to_string(),
         ("careful_reading", Some(2)) => "仔细阅读 2".to_string(),
         ("careful_reading", _) => "仔细阅读".to_string(),
+        ("translation", _) => "翻译".to_string(),
         _ => question_type.to_string(),
     }
 }
 
 fn format_question_group_label(question_type: &str, slot: Option<i32>) -> String {
     match (question_type, slot) {
+        ("writing", _) => "Part I".to_string(),
         ("banked_cloze", _) => "Section A".to_string(),
         ("long_reading", _) => "Section B".to_string(),
         ("careful_reading", Some(1)) => "Section C-1".to_string(),
         ("careful_reading", Some(2)) => "Section C-2".to_string(),
         ("careful_reading", _) => "Section C".to_string(),
+        ("translation", _) => "Part IV".to_string(),
         _ => "Reading Set".to_string(),
     }
 }
 
 fn format_directions(question_type: &str) -> &'static str {
     match question_type {
+        "writing" => {
+            "Directions: For this part, you are allowed 30 minutes to write an essay according to the task given below."
+        }
         "banked_cloze" => {
             "Directions: In this section, there is a passage with ten blanks. Choose one word for each blank from the fifteen choices in the answer bank."
         }
@@ -5036,24 +5475,31 @@ fn format_directions(question_type: &str) -> &'static str {
         "careful_reading" => {
             "Directions: Read the passage carefully and choose the best answer to each question according to the information given in the passage."
         }
+        "translation" => {
+            "Directions: For this part, you are allowed 30 minutes to translate the following Chinese passage into English."
+        }
         _ => "Directions: Read the passage and complete the questions below.",
     }
 }
 
 fn recommended_time_text(question_type: &str) -> &'static str {
     match question_type {
+        "writing" => "30 分钟",
         "banked_cloze" => "8 分钟",
         "long_reading" => "15 分钟",
         "careful_reading" => "12 分钟",
+        "translation" => "30 分钟",
         _ => "10 分钟",
     }
 }
 
 fn recommended_seconds_for_question_type(question_type: &str) -> i64 {
     match question_type {
+        "writing" => 30 * 60,
         "banked_cloze" => 8 * 60,
         "long_reading" => 15 * 60,
         "careful_reading" => 12 * 60,
+        "translation" => 30 * 60,
         _ => 10 * 60,
     }
 }

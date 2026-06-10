@@ -60,6 +60,8 @@ class StatsService:
             ("long_reading", "长篇阅读"),
             ("careful_reading:1", "仔细阅读 1"),
             ("careful_reading:2", "仔细阅读 2"),
+            ("writing", "写作"),
+            ("translation", "翻译"),
         ]
         for key, label in keys:
             item = stats.get(key)
@@ -79,6 +81,8 @@ class StatsService:
             ("long_reading", "长篇阅读"),
             ("careful_reading:1", "仔细阅读 1"),
             ("careful_reading:2", "仔细阅读 2"),
+            ("writing", "写作"),
+            ("translation", "翻译"),
         ]
         cards = []
         for key, label in keys:
