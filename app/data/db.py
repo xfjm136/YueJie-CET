@@ -177,8 +177,9 @@ class Database:
             ).fetchone()
             if not row:
                 return None
+            row_data = dict(row)
 
-            question_set_id = row["question_set_id"]
+            question_set_id = row_data["question_set_id"]
             conn.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
             remaining = conn.execute(
                 "SELECT COUNT(*) AS total FROM attempts WHERE question_set_id = ?",
@@ -191,13 +192,13 @@ class Database:
 
             self._rebuild_vocabulary_items_from_attempts(conn)
             return {
-                "attempt_id": row["attempt_id"],
+                "attempt_id": row_data["attempt_id"],
                 "question_set_id": question_set_id,
                 "question_set_deleted": question_set_deleted,
-                "level": row["level"],
-                "question_type": row["question_type"],
-                "title": row["title"],
-                "topic": row["topic"],
+                "level": row_data["level"],
+                "question_type": row_data["question_type"],
+                "title": row_data["title"],
+                "topic": row_data["topic"],
             }
 
     def list_history(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -288,7 +289,7 @@ class Database:
         conn.execute("DELETE FROM vocabulary_items")
         rows = conn.execute(
             """
-            SELECT a.submitted_at, q.payload_json
+            SELECT a.submitted_at, a.result_json, q.payload_json
             FROM attempts a
             JOIN question_sets q ON q.id = a.question_set_id
             ORDER BY a.submitted_at ASC

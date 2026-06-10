@@ -192,6 +192,52 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(db.list_vocabulary(limit=10), [])
             self.assertIsNone(db.get_question_set(question_set.id))
 
+    def test_delete_attempt_history_rebuilds_remaining_vocabulary_without_missing_keys(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+
+            first = build_question_set()
+            second = build_subjective_question_set(QuestionType.WRITING)
+            second.id = "qs_subjective_keep"
+            second.vocabulary = [
+                VocabularyItem("balance", "balance", "cet4", "平衡"),
+            ]
+
+            db.save_question_set(first)
+            db.save_question_set(second)
+
+            attempt_service = AttemptService(
+                db,
+                WeaknessService(db),
+                subjective_evaluator=FakeSubjectiveEvaluator(),
+            )
+            started_at = datetime.now(timezone.utc) - timedelta(minutes=15)
+            deleted_attempt = attempt_service.submit_attempt(
+                question_set=first,
+                answers={"q1": "A"},
+                started_at=started_at,
+                is_history_retry=False,
+            )
+            kept_attempt = attempt_service.submit_attempt(
+                question_set=second,
+                answers={"response_text": "A subjective answer."},
+                started_at=started_at + timedelta(minutes=5),
+                is_history_retry=False,
+            )
+
+            deleted = attempt_service.delete_attempt_history(deleted_attempt.id)
+            history = db.list_history(limit=10)
+            vocab = db.list_vocabulary(limit=20)
+            vocab_by_lemma = {item["lemma"]: item for item in vocab}
+
+            self.assertEqual(deleted["attempt_id"], deleted_attempt.id)
+            self.assertTrue(deleted["question_set_deleted"])
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["attempt_id"], kept_attempt.id)
+            self.assertIn("balance", vocab_by_lemma)
+            self.assertIn("using", vocab_by_lemma)
+
     def test_subjective_attempt_adds_wrong_words_to_vocabulary(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             db = Database(Path(tmp_dir) / "test.db")

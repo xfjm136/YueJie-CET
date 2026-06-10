@@ -2075,7 +2075,9 @@ impl YueJieRustApp {
             self.review_back_screen = Screen::Result;
             self.result = Some(result);
             self.result_detail_scroll = 0;
-            self.status_line = String::from("Enter/1 查看解析，2 下一题，3 重做，4 题型，5 首页。");
+            self.status_line = String::from(
+                "Enter/1 查看解析，2 下一题，3 重做，4 题型，5 首页，PageUp/PageDown 可浏览摘要。",
+            );
             self.screen = Screen::Result;
         }
         Ok(())
@@ -2873,8 +2875,7 @@ impl YueJieRustApp {
                 Constraint::Length(4),
                 Constraint::Length(score_card_height),
                 Constraint::Length(5),
-                Constraint::Min(6),
-                Constraint::Length(6),
+                Constraint::Min(12),
                 Constraint::Length(4),
                 Constraint::Length(1),
             ])
@@ -3000,8 +3001,14 @@ impl YueJieRustApp {
                 .map(|item| Line::from(format!("• {}", item)))
                 .collect::<Vec<_>>()
         };
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(chunks[3]);
         frame.render_widget(
             Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("结果摘要", title_style(palette))),
+                Line::from(""),
                 Line::from(
                     subjective
                         .as_ref()
@@ -3010,23 +3017,52 @@ impl YueJieRustApp {
                 ),
                 Line::from(""),
                 Line::from(format!(
-                    "来源：{} / 模型：{} / 主题：{}",
-                    practice.question_set.source_type,
-                    practice.question_set.generator_model,
-                    practice.question_set.topic
+                    "来源：{} / 模型：{}",
+                    practice.question_set.source_type, practice.question_set.generator_model
                 )),
+                Line::from(format!(
+                    "主题：{} / 建议用时：{}",
+                    practice.question_set.topic,
+                    recommended_time_text(&practice.question_set.question_type)
+                )),
+                Line::from(""),
+                Line::from("PageUp/PageDown 或滚轮可继续浏览本区。"),
             ]))
-            .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
+            .scroll((self.result_detail_scroll, 0))
             .block(simple_block("结果摘要", palette)),
-            chunks[3],
+            body[0],
         );
 
         frame.render_widget(
-            Paragraph::new(Text::from(recommendation_lines))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("下一步建议", palette)),
-            chunks[4],
+            Paragraph::new(Text::from({
+                let mut lines = vec![
+                    Line::from(Span::styled("下一步建议", title_style(palette))),
+                    Line::from(""),
+                ];
+                lines.extend(recommendation_lines);
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(
+                    "当前状态：{}",
+                    if let Some(evaluation) = &subjective {
+                        evaluation.grade_band.clone()
+                    } else {
+                        accuracy_band(result.accuracy).to_string()
+                    }
+                )));
+                lines.push(Line::from(format!(
+                    "作答用时：{}",
+                    seconds_to_text(result.duration_seconds)
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from("Enter/1 查看完整解析"));
+                lines.push(Line::from("2 下一题  3 重做本题"));
+                lines.push(Line::from("4 返回题型  5 回首页"));
+                lines
+            }))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("行动面板", palette)),
+            body[1],
         );
 
         let buttons = Layout::default()
@@ -3038,7 +3074,7 @@ impl YueJieRustApp {
                 Constraint::Ratio(1, 5),
                 Constraint::Ratio(1, 5),
             ])
-            .split(chunks[5]);
+            .split(chunks[4]);
         self.draw_action_button(
             frame,
             buttons[0],
@@ -3079,7 +3115,7 @@ impl YueJieRustApp {
             false,
             Action::ResultBackHome,
         );
-        self.draw_status_line(frame, chunks[6], palette);
+        self.draw_status_line(frame, chunks[5], palette);
     }
 
     fn draw_history(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
@@ -3160,7 +3196,7 @@ impl YueJieRustApp {
         } else {
             let body = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[2]);
             let list_inner = simple_block("历史记录", palette).inner(body[0]);
             let items: Vec<ListItem> = self
@@ -3208,7 +3244,7 @@ impl YueJieRustApp {
             let selected = &self.history[self.history_index];
             let detail_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(5), Constraint::Min(7)])
+                .constraints([Constraint::Length(6), Constraint::Min(9)])
                 .split(body[1]);
             frame.render_widget(
                 Paragraph::new(Text::from(vec![
@@ -3348,14 +3384,13 @@ impl YueJieRustApp {
         } else {
             accuracy_band(bundle.result.accuracy).to_string()
         };
-        let outer = centered_rect(96, 96, area);
+        let outer = centered_rect(98, 98, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4),
-                Constraint::Length(4),
-                Constraint::Length(6),
-                Constraint::Min(14),
+                Constraint::Length(5),
+                Constraint::Min(18),
                 Constraint::Length(4),
                 Constraint::Length(1),
             ])
@@ -3424,21 +3459,32 @@ impl YueJieRustApp {
             None,
         );
 
-        let top = Layout::default()
+        let body = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(chunks[2]);
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(9), Constraint::Min(9)])
+            .split(body[0]);
+        let overview_preview = if let Some(evaluation) = &subjective {
+            format!(
+                "{}\n\n{}",
+                truncate_text(&evaluation.overall_feedback_zh, 180),
+                truncate_text(&bundle.question_set.analysis.overall_summary, 120)
+            )
+        } else {
+            format!(
+                "{}\n\n{}",
+                truncate_text(&bundle.question_set.analysis.overall_strategy, 180),
+                truncate_text(&bundle.question_set.analysis.overall_summary, 120)
+            )
+        };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(Span::styled("复盘摘要", title_style(palette))),
+                Line::from(Span::styled("复盘概览", title_style(palette))),
                 Line::from(""),
-                Line::from(if let Some(evaluation) = &subjective {
-                    evaluation.overall_feedback_zh.clone()
-                } else {
-                    bundle.question_set.analysis.overall_strategy.clone()
-                }),
-                Line::from(""),
-                Line::from(bundle.question_set.analysis.overall_summary.clone()),
+                Line::from(overview_preview),
                 Line::from(""),
                 Line::from(format!(
                     "来源：{} / 模型：{}",
@@ -3446,8 +3492,8 @@ impl YueJieRustApp {
                 )),
             ]))
             .wrap(Wrap { trim: false })
-            .block(simple_block("文章策略", palette)),
-            top[0],
+            .block(simple_block("概览预览", palette)),
+            left[0],
         );
         let vocab_lines = if bundle.question_set.vocabulary.is_empty() {
             vec![Line::from("暂无词汇数据。")]
@@ -3465,87 +3511,96 @@ impl YueJieRustApp {
                 })
                 .collect::<Vec<_>>()
         };
-        let right = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(5)])
-            .split(top[1]);
-        let mut skill_lines = vec![
-            Line::from(Span::styled(
-                if subjective.is_some() {
-                    "评分维度"
-                } else {
-                    "技能表现"
-                },
-                title_style(palette),
-            )),
+        let mut snapshot_lines = vec![
+            Line::from(Span::styled("能力与词汇", title_style(palette))),
             Line::from(""),
         ];
         if let Some(evaluation) = &subjective {
             for item in &evaluation.score_dimensions {
-                skill_lines.push(Line::from(format!(
+                snapshot_lines.push(Line::from(format!(
                     "{}  {}/{}",
                     format_skill_label(&item.name),
                     item.score,
                     item.max_score
                 )));
-                skill_lines.push(Line::from(format!("  {}", item.feedback_zh)));
+            }
+            snapshot_lines.push(Line::from(""));
+            if evaluation.wrong_words.is_empty() {
+                snapshot_lines.push(Line::from("暂无明显错词。"));
+            } else {
+                for item in evaluation.wrong_words.iter().take(4) {
+                    snapshot_lines.push(Line::from(format!(
+                        "{} -> {}",
+                        item.original, item.corrected
+                    )));
+                }
             }
         } else {
-            skill_lines.extend(build_skill_summary_lines(&bundle.result.question_results));
+            snapshot_lines.extend(build_skill_summary_lines(&bundle.result.question_results));
+            snapshot_lines.push(Line::from(""));
+            snapshot_lines.extend(vocab_lines.iter().take(4).cloned());
         }
         frame.render_widget(
-            Paragraph::new(Text::from(skill_lines))
+            Paragraph::new(Text::from(snapshot_lines))
                 .wrap(Wrap { trim: false })
-                .block(simple_block("能力分布", palette)),
-            right[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Text::from({
-                let mut lines = vec![
-                    Line::from(Span::styled(
-                        if subjective.is_some() {
-                            "错词纠正"
-                        } else {
-                            "复盘词汇"
-                        },
-                        title_style(palette),
-                    )),
-                    Line::from(""),
-                ];
-                if let Some(evaluation) = &subjective {
-                    if evaluation.wrong_words.is_empty() {
-                        lines.push(Line::from("暂无明显错词。"));
-                    } else {
-                        for item in &evaluation.wrong_words {
-                            lines.push(Line::from(format!(
-                                "{} -> {} ({})",
-                                item.original, item.corrected, item.meaning_zh
-                            )));
-                            lines.push(Line::from(format!("  {}", item.reason_zh)));
-                        }
-                    }
-                } else {
-                    lines.extend(vocab_lines);
-                }
-                lines
-            }))
-            .wrap(Wrap { trim: false })
-            .block(simple_block("复盘词汇", palette)),
-            right[1],
+                .block(simple_block("能力速览", palette)),
+            left[1],
         );
 
         let mut lines = vec![
-            Line::from(Span::styled(
-                if subjective.is_some() {
-                    "完整详解"
-                } else {
-                    "逐题复盘"
-                },
-                title_style(palette),
-            )),
+            Line::from(Span::styled("完整复盘档案", title_style(palette))),
             Line::from(""),
         ];
+        lines.push(Line::from("复盘摘要："));
+        lines.push(Line::from(""));
+        lines.push(Line::from(if let Some(evaluation) = &subjective {
+            evaluation.overall_feedback_zh.clone()
+        } else {
+            bundle.question_set.analysis.overall_strategy.clone()
+        }));
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            bundle.question_set.analysis.overall_summary.clone(),
+        ));
+        if !bundle.question_set.analysis.test_tips.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from("解题提示："));
+            for tip in &bundle.question_set.analysis.test_tips {
+                lines.push(Line::from(format!("• {}", tip)));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(if subjective.is_some() {
+            "评分维度："
+        } else {
+            "能力分布："
+        }));
+        lines.push(Line::from(""));
         if let Some(evaluation) = &subjective {
+            for item in &evaluation.score_dimensions {
+                lines.push(Line::from(format!(
+                    "{}  {}/{}",
+                    format_skill_label(&item.name),
+                    item.score,
+                    item.max_score
+                )));
+                lines.push(Line::from(format!("  {}", item.feedback_zh)));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from("错词纠正："));
+            lines.push(Line::from(""));
+            if evaluation.wrong_words.is_empty() {
+                lines.push(Line::from("暂无明显错词。"));
+            } else {
+                for item in &evaluation.wrong_words {
+                    lines.push(Line::from(format!(
+                        "{} -> {} ({})",
+                        item.original, item.corrected, item.meaning_zh
+                    )));
+                    lines.push(Line::from(format!("  {}", item.reason_zh)));
+                }
+            }
+            lines.push(Line::from(""));
             if evaluation.sentence_rewrites.is_empty() {
                 lines.push(Line::from("暂无病句改写。"));
             } else {
@@ -3559,6 +3614,7 @@ impl YueJieRustApp {
                 }
             }
             if !evaluation.high_score_version.trim().is_empty() {
+                lines.push(Line::from(""));
                 lines.push(Line::from("高分版本："));
                 lines.push(Line::from(""));
                 for line in evaluation.high_score_version.lines() {
@@ -3566,6 +3622,14 @@ impl YueJieRustApp {
                 }
             }
         } else {
+            lines.extend(build_skill_summary_lines(&bundle.result.question_results));
+            lines.push(Line::from(""));
+            lines.push(Line::from("复盘词汇："));
+            lines.push(Line::from(""));
+            lines.extend(vocab_lines);
+            lines.push(Line::from(""));
+            lines.push(Line::from("逐题复盘："));
+            lines.push(Line::from(""));
             for (index, item) in bundle.result.question_results.iter().enumerate() {
                 lines.push(Line::from(format!(
                     "{}. 你的答案 {} / 正确答案 {}",
@@ -3581,12 +3645,12 @@ impl YueJieRustApp {
                 .wrap(Wrap { trim: false })
                 .scroll((self.review_detail_scroll, 0))
                 .block(simple_block("复盘详情（可滚动）", palette)),
-            chunks[3],
+            body[1],
         );
         let buttons = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(chunks[4]);
+            .split(chunks[3]);
         self.draw_action_button(
             frame,
             buttons[0],
@@ -3607,7 +3671,7 @@ impl YueJieRustApp {
             false,
             Action::BackReview,
         );
-        self.draw_status_line(frame, chunks[5], palette);
+        self.draw_status_line(frame, chunks[4], palette);
     }
 
     fn draw_weakness(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
@@ -4085,11 +4149,13 @@ impl YueJieRustApp {
             Action::PracticeBack,
         );
         frame.render_widget(
-            Paragraph::new(
-                "Ctrl+S 提交 | Backspace 清空当前答案 | Space/Enter 选中项 | PageUp/PageDown 滚动文章",
-            )
-                .alignment(Alignment::Center)
-                .block(simple_block("", palette)),
+            Paragraph::new(if practice.question_set.questions.is_empty() {
+                "Ctrl+S 提交 | Enter 换行 | 左右移动光标 | 上下滚动作答区 | PageUp/PageDown 滚动题面"
+            } else {
+                "Ctrl+S 提交 | Backspace 清空当前答案 | Space/Enter 选中项 | PageUp/PageDown 滚动文章"
+            })
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
             chunks[5],
         );
     }
@@ -4101,9 +4167,10 @@ impl YueJieRustApp {
         palette: Palette,
         practice: &PracticeState,
     ) {
+        let prompt_height = ((area.height.saturating_mul(42)) / 100).clamp(10, 16);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(12), Constraint::Min(12)])
+            .constraints([Constraint::Length(prompt_height), Constraint::Min(12)])
             .split(area);
 
         let mut prompt_lines = vec![
@@ -4142,17 +4209,71 @@ impl YueJieRustApp {
             chunks[0],
         );
 
-        let response = if practice.response_text().trim().is_empty() {
-            "在这里输入你的作文或译文。\n\nCtrl+S 提交，Enter 换行，Backspace 删除。".to_string()
-        } else {
-            practice.response_text().to_string()
-        };
+        let answer_block = simple_block("答题卡", palette);
+        let answer_inner = answer_block.inner(chunks[1]);
+        frame.render_widget(answer_block, chunks[1]);
+
+        let answer_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .split(answer_inner);
+        let editor_width = answer_chunks[1].width.max(1) as usize;
+        let editor_rows = subjective_editor_rows(
+            practice.response_text(),
+            practice.subjective_cursor,
+            editor_width.saturating_sub(1).max(1),
+        );
+        let (cursor_line, cursor_col) = subjective_cursor_line_col(&editor_rows);
+        let visible_height = answer_chunks[1].height.max(1) as usize;
+        let max_scroll = editor_rows.len().saturating_sub(visible_height) as u16;
+        let scroll = practice.subjective_scroll.min(max_scroll) as usize;
+
         frame.render_widget(
-            Paragraph::new(response)
-                .wrap(Wrap { trim: false })
-                .scroll((practice.subjective_scroll, 0))
-                .block(simple_block("答题卡", palette)),
-            chunks[1],
+            Paragraph::new(Text::from(vec![Line::from(vec![
+                Span::styled(
+                    format!("Ln {:02}  Col {:02}", cursor_line, cursor_col),
+                    title_style(palette),
+                ),
+                Span::raw("  ·  "),
+                Span::styled(
+                    format!(
+                        "答题横线已对齐，当前约 {} 词",
+                        practice.response_text().split_whitespace().count()
+                    ),
+                    Style::default().fg(palette.muted),
+                ),
+            ])]))
+            .alignment(Alignment::Left),
+            answer_chunks[0],
+        );
+
+        let mut answer_lines = Vec::with_capacity(visible_height);
+        for offset in 0..visible_height {
+            let row_index = scroll + offset;
+            if let Some(row) = editor_rows.get(row_index) {
+                let mut spans = subjective_editor_line_spans(
+                    row,
+                    editor_width,
+                    palette,
+                    practice.response_text().trim().is_empty() && row_index == 0,
+                );
+                if spans.is_empty() {
+                    spans.push(Span::styled(
+                        "─".repeat(editor_width),
+                        Style::default().fg(palette.border),
+                    ));
+                }
+                answer_lines.push(Line::from(spans));
+            } else {
+                answer_lines.push(Line::from(Span::styled(
+                    "─".repeat(editor_width),
+                    Style::default().fg(palette.border),
+                )));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(answer_lines)).alignment(Alignment::Left),
+            answer_chunks[1],
         );
     }
 
@@ -5647,6 +5768,150 @@ fn generation_scan_frame(tick: usize) -> &'static str {
     FRAMES[tick % FRAMES.len()]
 }
 
+#[derive(Clone, Debug)]
+struct SubjectiveEditorRow {
+    text: String,
+    cursor_col: Option<usize>,
+}
+
+fn subjective_editor_rows(
+    text: &str,
+    cursor_byte: usize,
+    wrap_width: usize,
+) -> Vec<SubjectiveEditorRow> {
+    let width = wrap_width.max(1);
+    let mut rows = Vec::new();
+    let mut line_start = 0usize;
+
+    for logical_line in text.split('\n') {
+        let line_end = line_start + logical_line.len();
+        let local_cursor = if cursor_byte >= line_start && cursor_byte <= line_end {
+            Some(text[line_start..cursor_byte].chars().count())
+        } else {
+            None
+        };
+        let chars = logical_line.chars().collect::<Vec<_>>();
+
+        if chars.is_empty() {
+            rows.push(SubjectiveEditorRow {
+                text: String::new(),
+                cursor_col: local_cursor.or(if cursor_byte == line_start {
+                    Some(0)
+                } else {
+                    None
+                }),
+            });
+        } else {
+            let mut chunk_start = 0usize;
+            while chunk_start < chars.len() {
+                let chunk_end = (chunk_start + width).min(chars.len());
+                let chunk_text = chars[chunk_start..chunk_end].iter().collect::<String>();
+                let cursor_col = local_cursor.and_then(|cursor_chars| {
+                    if cursor_chars < chunk_end && cursor_chars >= chunk_start {
+                        Some(cursor_chars - chunk_start)
+                    } else if cursor_chars == chunk_end && chunk_end == chars.len() {
+                        Some(cursor_chars - chunk_start)
+                    } else {
+                        None
+                    }
+                });
+                rows.push(SubjectiveEditorRow {
+                    text: chunk_text,
+                    cursor_col,
+                });
+                chunk_start = chunk_end;
+            }
+        }
+
+        line_start = line_end + 1;
+    }
+
+    if rows.is_empty() {
+        rows.push(SubjectiveEditorRow {
+            text: String::new(),
+            cursor_col: Some(0),
+        });
+    }
+
+    rows
+}
+
+fn subjective_cursor_line_col(rows: &[SubjectiveEditorRow]) -> (usize, usize) {
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(col) = row.cursor_col {
+            return (index + 1, col + 1);
+        }
+    }
+    (1, 1)
+}
+
+fn subjective_editor_line_spans(
+    row: &SubjectiveEditorRow,
+    width: usize,
+    palette: Palette,
+    show_placeholder: bool,
+) -> Vec<Span<'static>> {
+    let underline_style = Style::default()
+        .fg(palette.text)
+        .add_modifier(Modifier::UNDERLINED);
+    let filler_style = Style::default()
+        .fg(palette.border)
+        .add_modifier(Modifier::UNDERLINED);
+    let text_style = underline_style;
+    let muted_underlined = Style::default()
+        .fg(palette.muted)
+        .add_modifier(Modifier::UNDERLINED);
+    let caret_style = if glass_mode(palette) {
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default()
+            .fg(palette.highlight_text)
+            .bg(palette.accent)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    };
+
+    let mut spans = Vec::new();
+    if let Some(cursor_col) = row.cursor_col {
+        if show_placeholder && row.text.is_empty() {
+            spans.push(Span::styled("▏", caret_style));
+            spans.push(Span::styled(" 在这里输入你的作文或译文", muted_underlined));
+            let used = 1 + " 在这里输入你的作文或译文".chars().count();
+            let remaining = width.saturating_sub(used);
+            if remaining > 0 {
+                spans.push(Span::styled(" ".repeat(remaining), filler_style));
+            }
+            return spans;
+        }
+
+        let chars = row.text.chars().collect::<Vec<_>>();
+        let split_at = cursor_col.min(chars.len());
+        let left = chars[..split_at].iter().collect::<String>();
+        let right = chars[split_at..].iter().collect::<String>();
+        if !left.is_empty() {
+            spans.push(Span::styled(left.clone(), text_style));
+        }
+        spans.push(Span::styled("▏", caret_style));
+        if !right.is_empty() {
+            spans.push(Span::styled(right.clone(), text_style));
+        }
+        let used = left.chars().count() + right.chars().count() + 1;
+        let remaining = width.saturating_sub(used);
+        if remaining > 0 {
+            spans.push(Span::styled(" ".repeat(remaining), filler_style));
+        }
+        return spans;
+    }
+
+    spans.push(Span::styled(row.text.clone(), text_style));
+    let remaining = width.saturating_sub(row.text.chars().count());
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), filler_style));
+    }
+    spans
+}
+
 fn build_skill_summary_lines(results: &[AttemptQuestionResult]) -> Vec<Line<'static>> {
     let mut stats: HashMap<String, (usize, usize)> = HashMap::new();
     for item in results {
@@ -5709,7 +5974,7 @@ fn timer_glyphs() -> HashMap<char, [&'static str; 5]> {
         ('1', [" ╻ ", " ┃ ", " ┃ ", " ┃ ", " ╹ "]),
         ('2', ["┏━┓", "  ┃", "┏━┛", "┃  ", "┗━┛"]),
         ('3', ["┏━┓", "  ┃", " ━┫", "  ┃", "┗━┛"]),
-        ('4', ["   ", "┃ ┃", "┣━┫", "  ┃", "  ┃"]),
+        ('4', ["╻ ╻", "┃ ┃", "┗━┫", "  ┃", "  ╹"]),
         ('5', ["┏━┓", "┃  ", "┗━┓", "  ┃", "┗━┛"]),
         ('6', ["┏━┓", "┃  ", "┣━┓", "┃ ┃", "┗━┛"]),
         ('7', ["┏━┓", "  ┃", "  ┃", "  ┃", "  ┃"]),
@@ -5783,8 +6048,8 @@ mod tests {
     #[test]
     fn timer_digit_four_uses_lowered_seven_segment_shape() {
         let glyphs = timer_glyphs();
-        assert_eq!(glyphs.get(&'4').unwrap()[0], "   ");
-        assert_eq!(glyphs.get(&'4').unwrap()[2], "┣━┫");
+        assert_eq!(glyphs.get(&'4').unwrap()[0], "╻ ╻");
+        assert_eq!(glyphs.get(&'4').unwrap()[2], "┗━┫");
     }
 
     #[test]
