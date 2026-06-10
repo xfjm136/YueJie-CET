@@ -1483,6 +1483,7 @@ impl YueJieRustApp {
                 }
                 Screen::History if !self.history.is_empty() => {
                     self.history_index = self.history_index.saturating_sub(1);
+                    self.pending_history_delete_attempt_id = None;
                 }
                 Screen::Weakness if !self.weakness.is_empty() => {
                     self.weakness_index = self.weakness_index.saturating_sub(1);
@@ -1506,6 +1507,7 @@ impl YueJieRustApp {
                 }
                 Screen::History if !self.history.is_empty() => {
                     self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                    self.pending_history_delete_attempt_id = None;
                 }
                 Screen::Weakness if !self.weakness.is_empty() => {
                     self.weakness_index = (self.weakness_index + 1).min(self.weakness.len() - 1);
@@ -1556,6 +1558,7 @@ impl YueJieRustApp {
             }
             Action::HistoryReview(index) => {
                 if let Some(item) = self.history.get(index) {
+                    self.pending_history_delete_attempt_id = None;
                     let review = self.backend.review(&item.attempt_id)?;
                     self.sync_selection_from_question_set(&review.question_set);
                     self.review_detail_scroll = 0;
@@ -1572,6 +1575,7 @@ impl YueJieRustApp {
             }
             Action::HistoryRedo(index) => {
                 if let Some(item) = self.history.get(index) {
+                    self.pending_history_delete_attempt_id = None;
                     let review = self.backend.review(&item.attempt_id)?;
                     self.sync_selection_from_question_set(&review.question_set);
                     self.practice = Some(PracticeState::new(review.question_set, true));

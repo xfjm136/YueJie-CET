@@ -32,9 +32,8 @@ class QuestionService:
             progress_callback=progress_callback,
         )
         if progress_callback is not None:
-            progress_callback("save", "题目已通过校验，正在保存题集与词汇。")
+            progress_callback("save", "题目已通过校验，正在保存题集与解析。")
         self.db.save_question_set(question_set)
-        self.db.upsert_vocabulary_items(question_set.vocabulary)
         if progress_callback is not None:
             progress_callback("done", "题目、解析与词汇均已准备完成。")
         return question_set

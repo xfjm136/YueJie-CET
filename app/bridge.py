@@ -193,7 +193,6 @@ def command_generate_mock(args: argparse.Namespace) -> None:
         model_name=runtime.settings.deepseek_model,
     )
     runtime.db.save_question_set(question_set)
-    runtime.db.upsert_vocabulary_items(question_set.vocabulary)
     _success(question_set=question_set.to_dict())
 
 

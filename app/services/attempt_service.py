@@ -25,6 +25,7 @@ class AttemptService:
         duration_seconds = max(1, int((submitted_at - started_at).total_seconds()))
         result = grade_attempt(question_set, answers, duration_seconds)
         self.db.save_attempt(result, answers, started_at, submitted_at, is_history_retry)
+        self.db.upsert_vocabulary_items(question_set.vocabulary)
         self.weakness_service.refresh_snapshot(question_set.level, question_set.question_type)
         return result
 
