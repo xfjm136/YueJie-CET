@@ -35,6 +35,14 @@ class CETQuestionValidator:
         "vocabulary_in_context",
         "attitude",
     }
+    WRITING_MIN_WORDS = {
+        Level.CET4: 120,
+        Level.CET6: 150,
+    }
+    TRANSLATION_CHAR_RANGES = {
+        Level.CET4: (140, 160),
+        Level.CET6: (180, 200),
+    }
 
     def validate(
         self,
@@ -78,14 +86,18 @@ class CETQuestionValidator:
         if len(normalized.get("vocabulary", [])) < 3:
             errors.append("vocabulary 至少应提供 3 个重点词汇")
 
-        self._validate_language_boundaries(normalized, errors)
+        self._validate_language_boundaries(normalized, question_type, errors)
 
         if question_type is QuestionType.BANKED_CLOZE:
             self._validate_banked_cloze(normalized, level, actual_word_count, errors)
         elif question_type is QuestionType.LONG_READING:
             self._validate_long_reading(normalized, level, actual_word_count, errors)
-        else:
+        elif question_type is QuestionType.CAREFUL_READING:
             self._validate_careful_reading(normalized, level, slot, actual_word_count, errors)
+        elif question_type is QuestionType.WRITING:
+            self._validate_writing(normalized, level, errors)
+        else:
+            self._validate_translation(normalized, level, errors)
 
         if errors:
             raise QuestionSetValidationError(errors)
@@ -102,6 +114,13 @@ class CETQuestionValidator:
         normalized["title"] = str(normalized.get("title", "")).strip()
         normalized["topic"] = str(normalized.get("topic", "")).strip()
         normalized["shared_options"] = list(normalized.get("shared_options", []))
+        normalized["task_prompt"] = str(normalized.get("task_prompt", "")).strip()
+        normalized["reference_answer"] = str(normalized.get("reference_answer", "")).strip()
+        normalized["rubric_focus"] = [
+            str(item).strip() for item in normalized.get("rubric_focus", [])
+        ]
+        normalized["min_response_words"] = int(normalized.get("min_response_words", 0) or 0)
+        normalized["max_response_words"] = int(normalized.get("max_response_words", 0) or 0)
         normalized["passage"] = dict(normalized.get("passage", {}))
         normalized["passage"]["title"] = str(normalized["passage"].get("title", normalized["title"])).strip()
         normalized["passage"]["paragraphs"] = [
@@ -155,6 +174,10 @@ class CETQuestionValidator:
         return len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", " ".join(paragraphs)))
 
     @staticmethod
+    def _char_count(text: str) -> int:
+        return len(re.findall(r"[\u4e00-\u9fff]", text))
+
+    @staticmethod
     def _contains_cjk(text: str) -> bool:
         return bool(re.search(r"[\u4e00-\u9fff]", text))
 
@@ -165,22 +188,29 @@ class CETQuestionValidator:
     def _validate_language_boundaries(
         self,
         payload: dict[str, Any],
+        question_type: QuestionType,
         errors: list[str],
     ) -> None:
         english_only_fields = [
             ("title", payload.get("title", "")),
             ("topic", payload.get("topic", "")),
             ("passage.title", payload.get("passage", {}).get("title", "")),
+            ("task_prompt", payload.get("task_prompt", "")),
+            ("reference_answer", payload.get("reference_answer", "")),
         ]
         for field_name, value in english_only_fields:
             text = str(value).strip()
             if not text:
-                errors.append(f"{field_name} 不能为空")
+                if field_name not in {"task_prompt", "reference_answer"}:
+                    errors.append(f"{field_name} 不能为空")
             elif self._contains_cjk(text):
                 errors.append(f"{field_name} 必须为英文，不应包含中文")
 
         for index, paragraph in enumerate(payload.get("passage", {}).get("paragraphs", []), start=1):
-            if self._contains_cjk(paragraph):
+            if question_type is QuestionType.TRANSLATION:
+                if not self._contains_cjk(paragraph):
+                    errors.append(f"passage.paragraphs 第 {index} 段必须为中文原文")
+            elif self._contains_cjk(paragraph):
                 errors.append(f"passage.paragraphs 第 {index} 段必须为英文，不应包含中文")
 
         for index, question in enumerate(payload.get("questions", []), start=1):
@@ -360,3 +390,62 @@ class CETQuestionValidator:
         for answer in payload["answer_key"]:
             if answer not in {"A", "B", "C", "D"}:
                 errors.append(f"仔细阅读答案必须是 A-D，发现：{answer}")
+
+    def _validate_writing(
+        self,
+        payload: dict[str, Any],
+        level: Level,
+        errors: list[str],
+    ) -> None:
+        if payload["questions"]:
+            errors.append("写作题不应包含客观题 questions")
+        if payload["answer_key"]:
+            errors.append("写作题不应包含 answer_key")
+        if payload["shared_options"]:
+            errors.append("写作题不应包含 shared_options")
+        if not payload.get("task_prompt"):
+            errors.append("写作题必须提供 task_prompt")
+        if not payload.get("reference_answer"):
+            errors.append("写作题必须提供 reference_answer")
+        if len(payload["passage"]["paragraphs"]) < 2:
+            errors.append("写作题题面说明至少应包含 2 行英文提示")
+        min_words = self.WRITING_MIN_WORDS[level]
+        if payload.get("min_response_words", 0) < min_words:
+            errors.append(f"写作题 min_response_words 不应低于 {min_words}")
+        reference_word_count = self._word_count([payload.get("reference_answer", "")])
+        payload["word_count"] = reference_word_count
+        if reference_word_count < min_words:
+            errors.append(f"写作题参考范文词数不应低于 {min_words}，当前为 {reference_word_count}")
+        if len(payload.get("rubric_focus", [])) < 4:
+            errors.append("写作题 rubric_focus 至少应包含 4 个评分维度")
+
+    def _validate_translation(
+        self,
+        payload: dict[str, Any],
+        level: Level,
+        errors: list[str],
+    ) -> None:
+        if payload["questions"]:
+            errors.append("翻译题不应包含客观题 questions")
+        if payload["answer_key"]:
+            errors.append("翻译题不应包含 answer_key")
+        if payload["shared_options"]:
+            errors.append("翻译题不应包含 shared_options")
+        if not payload.get("task_prompt"):
+            errors.append("翻译题必须提供 task_prompt")
+        if not payload.get("reference_answer"):
+            errors.append("翻译题必须提供 reference_answer")
+        if len(payload["passage"]["paragraphs"]) != 1:
+            errors.append("翻译题应提供 1 段中文原文")
+        source_text = " ".join(payload["passage"]["paragraphs"])
+        if not self._contains_cjk(source_text):
+            errors.append("翻译题原文必须为中文")
+        lower, upper = self.TRANSLATION_CHAR_RANGES[level]
+        char_count = self._char_count(source_text)
+        payload["word_count"] = char_count
+        if not lower <= char_count <= upper:
+            errors.append(f"翻译题中文原文字数应在 {lower}-{upper} 汉字之间，当前为 {char_count}")
+        if self._contains_cjk(payload.get("reference_answer", "")):
+            errors.append("翻译题参考译文必须为英文，不应包含中文")
+        if len(payload.get("rubric_focus", [])) < 4:
+            errors.append("翻译题 rubric_focus 至少应包含 4 个评分维度")

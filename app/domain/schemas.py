@@ -163,6 +163,7 @@ class WordCorrection:
     original: str
     corrected: str
     reason_zh: str
+    meaning_zh: str = ""
     skill_tag: str = "lexical_accuracy"
 
     def to_dict(self) -> dict[str, Any]:
@@ -173,6 +174,7 @@ class WordCorrection:
         return cls(
             original=data["original"],
             corrected=data["corrected"],
+            meaning_zh=data.get("meaning_zh", ""),
             reason_zh=data.get("reason_zh", ""),
             skill_tag=data.get("skill_tag", "lexical_accuracy"),
         )

@@ -11,11 +11,17 @@ from app.constants import LEVEL_LABELS, QUESTION_TYPE_LABELS
 from app.domain.enums import Level, QuestionType
 from app.domain.schemas import (
     AnalysisReport,
+    AttemptResult,
     ItemExplanation,
     Passage,
     Question,
     QuestionSet,
+    ScoreDimension,
+    SentenceRewrite,
+    SubjectiveEvaluation,
     VocabularyItem,
+    WordCorrection,
+    AttemptQuestionResult,
     make_id,
 )
 
@@ -101,7 +107,7 @@ class QuestionGenerationPipeline:
                 retry_errors=retry_errors,
             ),
             tool_name="deliver_question_set",
-            tool_description="Return one complete CET reading practice set as structured JSON.",
+            tool_description="Return one complete CET practice set as structured JSON.",
             parameters_schema=self._tool_parameters_schema(level, question_type),
             temperature=self._generation_temperature(question_type),
             max_tokens=self._max_tokens(question_type),
@@ -178,6 +184,20 @@ class QuestionGenerationPipeline:
                 "Paragraphs must be labeled A., B., C. ... with 10-14 total paragraphs, and at least one paragraph should be redundant or one paragraph may answer more than one item. "
                 "Each matching item must be an English statement, not a question, and must not include paragraph labels."
             )
+        if question_type is QuestionType.WRITING:
+            min_words = 120 if level is Level.CET4 else 150
+            return (
+                f"CET writing task. Write an English essay of no less than {min_words} words. "
+                "Provide an exam-style task prompt in English, 2-3 short instruction lines, a high-scoring sample essay, and rubric focus tags. "
+                "No objective questions, options, or answer_key should be included."
+            )
+        if question_type is QuestionType.TRANSLATION:
+            char_spec = "140-160 Chinese characters" if level is Level.CET4 else "180-200 Chinese characters"
+            return (
+                f"CET translation task. Provide one Chinese-to-English translation source passage of about {char_spec}. "
+                "Also provide a polished reference translation in English, rubric focus tags, and response length guidance. "
+                "No objective questions, options, or answer_key should be included."
+            )
         word_spec = "CET4 290-360 words; CET6 390-470 words."
         slot_hint = f"This is careful reading slot {slot}. " if slot else ""
         return (
@@ -215,7 +235,7 @@ class QuestionGenerationPipeline:
                 "Be stricter about the failed constraints this time while keeping the set natural and exam-like.\n"
             )
         return (
-            f"Generate one {level_label} {type_label} reading set from this blueprint:\n"
+            f"Generate one {level_label} {type_label} practice set from this blueprint:\n"
             f"{json.dumps(blueprint, ensure_ascii=False)}\n\n"
             f"{retry_note}"
             f"Mandatory spec:\n{self._question_spec(level, question_type, slot)}\n"
@@ -240,6 +260,8 @@ class QuestionGenerationPipeline:
             "- For long reading, every item prompt must be a statement rather than a question and must not include A./B./C. labels.\n"
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
+            "- For writing, produce an exam-style essay prompt, task instructions, and a high-scoring sample essay.\n"
+            "- For translation, provide a Chinese source passage and a natural English reference translation.\n"
             "- Do not write in a dramatic, fictional, or conversational blog style.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
             f"Question-type details:\n{self._question_type_details(question_type)}\n"
@@ -312,7 +334,7 @@ class QuestionGenerationPipeline:
                     repair_round=repair_round,
                 ),
                 tool_name="deliver_question_set",
-                tool_description="Return one corrected CET reading practice set as structured JSON.",
+                tool_description="Return one corrected CET practice set as structured JSON.",
                 parameters_schema=self._tool_parameters_schema(level, question_type),
                 temperature=0.1,
                 max_tokens=self._max_tokens(question_type),
@@ -369,6 +391,13 @@ class QuestionGenerationPipeline:
         normalized = dict(payload)
         normalized["title"] = str(normalized.get("title", "")).strip()
         normalized["topic"] = str(normalized.get("topic", "")).strip()
+        normalized["task_prompt"] = str(normalized.get("task_prompt", "")).strip()
+        normalized["reference_answer"] = str(normalized.get("reference_answer", "")).strip()
+        normalized["rubric_focus"] = [
+            str(item).strip() for item in normalized.get("rubric_focus", []) if str(item).strip()
+        ]
+        normalized["min_response_words"] = int(normalized.get("min_response_words", 0) or 0)
+        normalized["max_response_words"] = int(normalized.get("max_response_words", 0) or 0)
 
         passage = dict(normalized.get("passage", {}))
         paragraphs = [str(item).strip() for item in passage.get("paragraphs", []) if str(item).strip()]
@@ -549,6 +578,18 @@ class QuestionGenerationPipeline:
                 "优先看段首句和转折句，快速判断段落主旨。",
                 "若两段都像答案，重点比较信息范围和语义重心。",
             ]
+        if question_type is QuestionType.WRITING:
+            return [
+                "先确定立意和段落结构，再展开主要论点。",
+                "优先保证句子准确和衔接自然，不必为了复杂而复杂。",
+                "写完后重点检查拼写、时态、冠词和主谓一致。",
+            ]
+        if question_type is QuestionType.TRANSLATION:
+            return [
+                "先划清信息单位，避免漏译或错译关键关系。",
+                "优先保证表达自然完整，不要逐字硬译。",
+                "检查时态、冠词、单复数和固定搭配。",
+            ]
         return [
             "主旨题先抓首段和尾段，细节题一定回文定位。",
             "推断题关注转折、让步和作者评价性措辞。",
@@ -637,17 +678,34 @@ class QuestionGenerationPipeline:
             shared_options_schema["maxItems"] = 15
         else:
             shared_options_schema["maxItems"] = 0
-        answer_item_enum = ["A", "B", "C", "D"] if question_type is QuestionType.CAREFUL_READING else None
+        answer_item_enum = (
+            ["A", "B", "C", "D"] if question_type is QuestionType.CAREFUL_READING else None
+        )
         answer_items: dict[str, Any] = {"type": "string"}
         if answer_item_enum is not None:
             answer_items["enum"] = answer_item_enum
-        question_count = 5 if question_type is QuestionType.CAREFUL_READING else 10
+        if question_type in {QuestionType.WRITING, QuestionType.TRANSLATION}:
+            question_count = 0
+        elif question_type is QuestionType.CAREFUL_READING:
+            question_count = 5
+        else:
+            question_count = 10
         vocab_count = self._vocabulary_target_count(question_type)
         return {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
                 "topic": {"type": "string"},
+                "task_prompt": {"type": "string"},
+                "reference_answer": {"type": "string"},
+                "rubric_focus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 4,
+                    "maxItems": 6,
+                },
+                "min_response_words": {"type": "integer"},
+                "max_response_words": {"type": "integer"},
                 "shared_options": shared_options_schema,
                 "passage": {
                     "type": "object",
@@ -709,6 +767,11 @@ class QuestionGenerationPipeline:
             "required": [
                 "title",
                 "topic",
+                "task_prompt",
+                "reference_answer",
+                "rubric_focus",
+                "min_response_words",
+                "max_response_words",
                 "shared_options",
                 "passage",
                 "questions",
@@ -725,6 +788,10 @@ class QuestionGenerationPipeline:
             return ["vocabulary", "logic", "collocation", "context clue"]
         if question_type is QuestionType.LONG_READING:
             return ["matching"]
+        if question_type is QuestionType.WRITING:
+            return ["grammar", "lexical_accuracy", "coherence", "content_relevance"]
+        if question_type is QuestionType.TRANSLATION:
+            return ["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"]
         return [
             "main_idea",
             "detail",
@@ -737,6 +804,10 @@ class QuestionGenerationPipeline:
     def _max_tokens(question_type: QuestionType) -> int:
         if question_type is QuestionType.LONG_READING:
             return 5600
+        if question_type is QuestionType.WRITING:
+            return 2600
+        if question_type is QuestionType.TRANSLATION:
+            return 2400
         if question_type is QuestionType.CAREFUL_READING:
             return 3200
         return 2600
@@ -745,6 +816,10 @@ class QuestionGenerationPipeline:
     def _generation_temperature(question_type: QuestionType) -> float:
         if question_type is QuestionType.BANKED_CLOZE:
             return 0.32
+        if question_type is QuestionType.WRITING:
+            return 0.42
+        if question_type is QuestionType.TRANSLATION:
+            return 0.34
         if question_type is QuestionType.CAREFUL_READING:
             return 0.36
         return 0.4
@@ -755,6 +830,10 @@ class QuestionGenerationPipeline:
             return 230 if level is Level.CET4 else 280
         if question_type is QuestionType.LONG_READING:
             return 980 if level is Level.CET4 else 1180
+        if question_type is QuestionType.WRITING:
+            return 160 if level is Level.CET4 else 190
+        if question_type is QuestionType.TRANSLATION:
+            return 150 if level is Level.CET4 else 190
         return 330 if level is Level.CET4 else 430
 
     @staticmethod
@@ -763,6 +842,10 @@ class QuestionGenerationPipeline:
             return (200, 250) if level is Level.CET4 else (250, 300)
         if question_type is QuestionType.LONG_READING:
             return (850, 1150) if level is Level.CET4 else (1050, 1350)
+        if question_type is QuestionType.WRITING:
+            return (120, 220) if level is Level.CET4 else (150, 260)
+        if question_type is QuestionType.TRANSLATION:
+            return (140, 160) if level is Level.CET4 else (180, 200)
         return (290, 360) if level is Level.CET4 else (390, 470)
 
     def _strict_word_count_guidance(self, level: Level, question_type: QuestionType) -> str:
@@ -773,6 +856,16 @@ class QuestionGenerationPipeline:
                 f"Keep the passage paragraphs between {lower} and {upper} words, "
                 f"aim around {target}, and prefer 11-12 paragraphs with roughly even length."
             )
+        if question_type is QuestionType.WRITING:
+            return (
+                f"Keep the sample essay within about {lower}-{upper} English words, aiming around {target}. "
+                "Set min_response_words to the official lower bound only."
+            )
+        if question_type is QuestionType.TRANSLATION:
+            return (
+                f"Keep the Chinese source passage within about {lower}-{upper} Chinese characters, "
+                f"aiming around {target}."
+            )
         return f"Keep the passage paragraphs between {lower} and {upper} words, aiming around {target}."
 
     @staticmethod
@@ -781,12 +874,20 @@ class QuestionGenerationPipeline:
             return "adapted magazine or newspaper feature"
         if question_type is QuestionType.LONG_READING:
             return "multi-paragraph explanatory feature"
+        if question_type is QuestionType.WRITING:
+            return "short campus or social issue essay prompt"
+        if question_type is QuestionType.TRANSLATION:
+            return "Chinese expository or cultural passage for translation"
         return "argumentative or expository article"
 
     @staticmethod
     def _register_for(level: Level, question_type: QuestionType, slot: int | None) -> str:
         if question_type is QuestionType.LONG_READING:
             return "information-dense but readable standard written English"
+        if question_type is QuestionType.TRANSLATION:
+            return "concise Chinese source text with clear logical relations"
+        if question_type is QuestionType.WRITING:
+            return "exam-style writing instruction in standard written English"
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
             return (
                 "mildly academic and logically denser standard written English"
@@ -801,6 +902,10 @@ class QuestionGenerationPipeline:
             return ["vocabulary", "logic", "collocation", "context clue"]
         if question_type is QuestionType.LONG_READING:
             return ["matching", "scanning", "paraphrase recognition", "detail filtering"]
+        if question_type is QuestionType.WRITING:
+            return ["content relevance", "coherence", "grammar", "lexical accuracy"]
+        if question_type is QuestionType.TRANSLATION:
+            return ["translation accuracy", "translation fluency", "grammar", "lexical accuracy"]
         if slot == 2:
             return ["inference", "logic chain", "detail", "attitude", "vocabulary in context"]
         return ["main idea", "detail", "inference", "vocabulary in context", "attitude"]
@@ -832,6 +937,10 @@ class QuestionGenerationPipeline:
             )
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
             controls.append("make inference and attitude distractors slightly closer in plausibility")
+        if question_type is QuestionType.WRITING:
+            controls.append("keep the essay prompt practical, neutral, and familiar to CET candidates")
+        if question_type is QuestionType.TRANSLATION:
+            controls.append("use clear Chinese source sentences without literary ornament or obscure historical allusions")
         return controls
 
     @staticmethod
@@ -847,6 +956,18 @@ class QuestionGenerationPipeline:
                 "11-12 labeled paragraphs from A. onward with roughly even paragraph length",
                 "10 statement items for paragraph matching",
                 "at least one paragraph is redundant or reused",
+            ]
+        if question_type is QuestionType.WRITING:
+            return [
+                "one short exam instruction block",
+                "2-3 prompt lines in English",
+                "one high-scoring sample essay and rubric focus tags",
+            ]
+        if question_type is QuestionType.TRANSLATION:
+            return [
+                "one Chinese source paragraph",
+                "one polished reference translation",
+                "rubric focus tags and response length guidance",
             ]
         if slot == 2:
             return [
@@ -872,6 +993,16 @@ class QuestionGenerationPipeline:
                 "write statement prompts as paraphrases rather than copied lines",
                 "use clues from claim, evidence, contrast, or scope rather than simple keyword matching alone",
             ]
+        if question_type is QuestionType.WRITING:
+            return [
+                "the sample essay should be coherent, natural, and score in the upper CET band",
+                "the prompt should favor practical social, campus, or technology themes",
+            ]
+        if question_type is QuestionType.TRANSLATION:
+            return [
+                "the reference translation should sound natural instead of word-for-word",
+                "the Chinese source should include information points that reward accurate restructuring",
+            ]
         return [
             "distractors should reflect common misreadings or overgeneralizations",
             "avoid giveaway wording and keep answer distribution natural",
@@ -881,11 +1012,15 @@ class QuestionGenerationPipeline:
     def _question_id_pattern(question_type: QuestionType) -> str:
         if question_type is QuestionType.CAREFUL_READING:
             return "q1 to q5"
+        if question_type in {QuestionType.WRITING, QuestionType.TRANSLATION}:
+            return "no objective question ids"
         return "q1 to q10"
 
     @staticmethod
     def _vocabulary_target_count(question_type: QuestionType) -> int:
         if question_type is QuestionType.LONG_READING:
+            return 6
+        if question_type in {QuestionType.WRITING, QuestionType.TRANSLATION}:
             return 6
         return 5
 
@@ -948,6 +1083,42 @@ class QuestionGenerationPipeline:
                 f'"vocabulary": [{self._vocabulary_item_example(level)}]'
                 "}"
             )
+        if question_type is QuestionType.WRITING:
+            return (
+                "{"
+                '"title": "string", '
+                '"topic": "string", '
+                '"task_prompt": "English instruction line", '
+                '"reference_answer": "high-scoring English essay", '
+                '"rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"], '
+                '"min_response_words": 120, '
+                '"max_response_words": 220, '
+                '"shared_options": [], '
+                '"passage": {"title": "string", "paragraphs": ["English prompt line 1", "English prompt line 2"]}, '
+                '"questions": [], '
+                '"answer_key": [], '
+                '"analysis": {"overall_strategy": "中文", "overall_summary": "中文", "item_explanations": [], "test_tips": ["中文", "中文", "中文"]}, '
+                f'"vocabulary": [{self._vocabulary_item_example(level)}]'
+                "}"
+            )
+        if question_type is QuestionType.TRANSLATION:
+            return (
+                "{"
+                '"title": "string", '
+                '"topic": "string", '
+                '"task_prompt": "English instruction line", '
+                '"reference_answer": "natural English translation", '
+                '"rubric_focus": ["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"], '
+                '"min_response_words": 120, '
+                '"max_response_words": 220, '
+                '"shared_options": [], '
+                '"passage": {"title": "string", "paragraphs": ["中文原文段落"]}, '
+                '"questions": [], '
+                '"answer_key": [], '
+                '"analysis": {"overall_strategy": "中文", "overall_summary": "中文", "item_explanations": [], "test_tips": ["中文", "中文", "中文"]}, '
+                f'"vocabulary": [{self._vocabulary_item_example(level)}]'
+                "}"
+            )
         return (
             "{"
             '"title": "string", '
@@ -974,6 +1145,20 @@ class QuestionGenerationPipeline:
                 "- passage.paragraphs must contain labeled paragraphs beginning with A., B., C. ...\n"
                 "- questions must contain 10 English statements for matching, not questions.\n"
                 "- answer_key must contain paragraph letters only."
+            )
+        if question_type is QuestionType.WRITING:
+            return (
+                "- task_prompt must be an English exam instruction.\n"
+                "- passage.paragraphs must contain 2-3 English prompt lines.\n"
+                "- questions and answer_key must both be empty.\n"
+                "- reference_answer must be a high-scoring English essay."
+            )
+        if question_type is QuestionType.TRANSLATION:
+            return (
+                "- task_prompt must be an English exam instruction.\n"
+                "- passage.paragraphs must contain the Chinese source passage.\n"
+                "- questions and answer_key must both be empty.\n"
+                "- reference_answer must be a natural English translation."
             )
         return (
             "- questions must contain exactly 5 items.\n"
@@ -1065,7 +1250,200 @@ class QuestionGenerationPipeline:
             analysis=analysis,
             vocabulary=vocabulary,
             shared_options=list(payload.get("shared_options", [])),
+            task_prompt=payload.get("task_prompt", ""),
+            reference_answer=payload.get("reference_answer", ""),
+            rubric_focus=list(payload.get("rubric_focus", [])),
+            min_response_words=int(payload.get("min_response_words", 0)),
+            max_response_words=int(payload.get("max_response_words", 0)),
             word_count=int(payload.get("word_count", 0)),
             generator_model=self._model_name(),
             source_type=source_type,
+        )
+
+
+class SubjectiveEvaluationPipeline:
+    def __init__(self, client: DeepSeekClient | None, default_model: str) -> None:
+        self.client = client
+        self.default_model = default_model
+
+    def evaluate(
+        self,
+        question_set: QuestionSet,
+        response_text: str,
+        duration_seconds: int,
+    ) -> SubjectiveEvaluation:
+        if self.client is None:
+            raise RuntimeError(
+                "未配置 DEEPSEEK_API_KEY，无法进行写作/翻译 AI 评阅。请在 /data/YueJie-CET/.env 中配置后重试。"
+            )
+        payload = self.client.create_json_with_tool_schema(
+            system_prompt=self._system_prompt(),
+            user_prompt=self._user_prompt(question_set, response_text, duration_seconds),
+            tool_name="deliver_subjective_evaluation",
+            tool_description="Return one CET subjective-task evaluation as structured JSON.",
+            parameters_schema=self._tool_schema(question_set),
+            temperature=0.18,
+            max_tokens=2600,
+        )
+        return self._normalize_evaluation_payload(payload, question_set)
+
+    @staticmethod
+    def _system_prompt() -> str:
+        return (
+            "You are a CET writing and translation evaluator. "
+            "Return strict json only. "
+            "Score according to CET-style standards, provide concise Chinese feedback, and keep all corrected English natural."
+        )
+
+    def _user_prompt(
+        self,
+        question_set: QuestionSet,
+        response_text: str,
+        duration_seconds: int,
+    ) -> str:
+        task_type = "writing" if question_set.question_type is QuestionType.WRITING else "translation"
+        return (
+            f"Evaluate this CET {task_type} response.\n"
+            f"Level: {question_set.level.value}\n"
+            f"Task prompt: {question_set.task_prompt}\n"
+            f"Passage/task lines: {json.dumps(question_set.passage.paragraphs, ensure_ascii=False)}\n"
+            f"Reference answer: {question_set.reference_answer}\n"
+            f"Rubric focus: {json.dumps(question_set.rubric_focus, ensure_ascii=False)}\n"
+            f"Suggested time used: {duration_seconds} seconds.\n"
+            f"Candidate response:\n{response_text}\n\n"
+            "Evaluation requirements:\n"
+            "- score on a 15-point CET-style scale.\n"
+            "- provide 4 score dimensions tied to the rubric.\n"
+            "- identify misspelled, misused, or weak words and give corrected English words plus short Chinese reason and Chinese meaning.\n"
+            "- identify ungrammatical or awkward sentences and rewrite them in high-quality English.\n"
+            "- rewrite the full response into a high-scoring version while preserving the topic.\n"
+            "- weakness_tags should highlight grammar, lexical_accuracy, coherence, content_relevance, translation_accuracy, or translation_fluency as appropriate.\n"
+            "- keep all feedback in Chinese except corrected English words, rewritten English sentences, and the high-score version.\n"
+            "- if the response is too short, reflect that in score and feedback."
+        )
+
+    def _tool_schema(self, question_set: QuestionSet) -> dict[str, Any]:
+        dimension_names = (
+            ["content_relevance", "coherence", "grammar", "lexical_accuracy"]
+            if question_set.question_type is QuestionType.WRITING
+            else ["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"]
+        )
+        return {
+            "type": "object",
+            "properties": {
+                "score_15": {"type": "number"},
+                "estimated_reported_score": {"type": "number"},
+                "grade_band": {"type": "string"},
+                "overall_feedback_zh": {"type": "string"},
+                "score_dimensions": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "enum": dimension_names},
+                            "score": {"type": "number"},
+                            "max_score": {"type": "number"},
+                            "feedback_zh": {"type": "string"},
+                        },
+                        "required": ["name", "score", "max_score", "feedback_zh"],
+                        "additionalProperties": False,
+                    },
+                },
+                "wrong_words": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "original": {"type": "string"},
+                            "corrected": {"type": "string"},
+                            "meaning_zh": {"type": "string"},
+                            "reason_zh": {"type": "string"},
+                            "skill_tag": {"type": "string", "enum": ["lexical_accuracy", "grammar"]},
+                        },
+                        "required": ["original", "corrected", "meaning_zh", "reason_zh", "skill_tag"],
+                        "additionalProperties": False,
+                    },
+                },
+                "sentence_rewrites": {
+                    "type": "array",
+                    "maxItems": 6,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "original_sentence": {"type": "string"},
+                            "revised_sentence": {"type": "string"},
+                            "reason_zh": {"type": "string"},
+                            "skill_tag": {"type": "string", "enum": ["grammar", "coherence", "translation_fluency"]},
+                        },
+                        "required": ["original_sentence", "revised_sentence", "reason_zh", "skill_tag"],
+                        "additionalProperties": False,
+                    },
+                },
+                "high_score_version": {"type": "string"},
+                "weakness_tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "grammar",
+                            "lexical_accuracy",
+                            "coherence",
+                            "content_relevance",
+                            "translation_accuracy",
+                            "translation_fluency",
+                        ],
+                    },
+                },
+            },
+            "required": [
+                "score_15",
+                "estimated_reported_score",
+                "grade_band",
+                "overall_feedback_zh",
+                "score_dimensions",
+                "wrong_words",
+                "sentence_rewrites",
+                "high_score_version",
+                "weakness_tags",
+            ],
+            "additionalProperties": False,
+        }
+
+    def _normalize_evaluation_payload(
+        self,
+        payload: dict[str, Any],
+        question_set: QuestionSet,
+    ) -> SubjectiveEvaluation:
+        score_15 = max(0.0, min(15.0, float(payload.get("score_15", 0.0))))
+        estimated_reported = max(0.0, min(106.5, float(payload.get("estimated_reported_score", score_15 / 15 * 106.5))))
+        dimensions = [
+            ScoreDimension.from_dict(item)
+            for item in payload.get("score_dimensions", [])
+        ]
+        wrong_words = [
+            WordCorrection.from_dict(item)
+            for item in payload.get("wrong_words", [])
+        ]
+        sentence_rewrites = [
+            SentenceRewrite.from_dict(item)
+            for item in payload.get("sentence_rewrites", [])
+        ]
+        weakness_tags = [str(item).strip() for item in payload.get("weakness_tags", []) if str(item).strip()]
+        high_score_version = str(payload.get("high_score_version", "")).strip()
+        overall_feedback = str(payload.get("overall_feedback_zh", "")).strip()
+        if not weakness_tags:
+            weakness_tags = [item.name for item in dimensions if item.score < item.max_score * 0.75]
+        return SubjectiveEvaluation(
+            score_15=round(score_15, 1),
+            estimated_reported_score=round(estimated_reported, 1),
+            grade_band=str(payload.get("grade_band", "")).strip(),
+            overall_feedback_zh=overall_feedback,
+            score_dimensions=dimensions,
+            wrong_words=wrong_words[:8],
+            sentence_rewrites=sentence_rewrites[:6],
+            high_score_version=high_score_version,
+            weakness_tags=weakness_tags[:6],
         )

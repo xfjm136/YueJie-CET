@@ -327,6 +327,76 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(QuestionSetValidationError):
             self.validator.validate(payload, Level.CET6, QuestionType.LONG_READING, None)
 
+    def test_writing_payload_passes_validation(self) -> None:
+        payload = {
+            "title": "Writing Task",
+            "topic": "independent thinking",
+            "task_prompt": "For this part, you are allowed 30 minutes to write an essay of no less than 120 words according to the outline given below.",
+            "reference_answer": "Independent thinking remains essential in modern learning. Although digital tools can save time and improve access to information, students still need to judge evidence, organize ideas, and form their own conclusions. In classroom practice, learners benefit most when they use technology as support rather than as a substitute for reflection. For example, an online summary may help a student review faster, but deep understanding still requires careful reading, note-taking, and personal reflection on evidence. Universities should therefore teach students how to work with new tools while preserving habits of questioning, comparison, and self-correction. In this way, technology can increase efficiency without weakening the human ability to think clearly, argue responsibly, and learn for the long term. It also helps students remain confident when they face new information and unfamiliar opinions.",
+            "rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"],
+            "min_response_words": 120,
+            "max_response_words": 220,
+            "shared_options": [],
+            "passage": {
+                "title": "Writing Task",
+                "paragraphs": [
+                    "Suppose your university is organizing a reading campaign.",
+                    "Write an essay on why independent thinking still matters in the age of AI.",
+                    "You may include examples from study and daily life.",
+                ],
+            },
+            "questions": [],
+            "answer_key": [],
+            "analysis": {
+                "overall_strategy": "先审题，再列提纲，最后检查语言错误。",
+                "overall_summary": "这道写作题强调切题、结构和语言准确度。",
+                "item_explanations": [],
+                "test_tips": ["先定结构", "再展开主点", "最后检查语法和拼写"],
+            },
+            "vocabulary": [
+                {"lemma": "independent", "surface_form": "independent", "level_hint": "cet4", "meaning_zh": "独立的", "example_en": "Independent thinking helps students judge ideas."},
+                {"lemma": "reflection", "surface_form": "reflection", "level_hint": "cet4", "meaning_zh": "反思", "example_en": "Reflection improves long-term learning."},
+                {"lemma": "substitute", "surface_form": "substitute", "level_hint": "cet4", "meaning_zh": "替代品", "example_en": "A machine cannot be a full substitute for human judgment."},
+            ],
+        }
+        validated = self.validator.validate(payload, Level.CET4, QuestionType.WRITING, None)
+        self.assertEqual(validated["questions"], [])
+        self.assertGreaterEqual(validated["word_count"], 120)
+
+    def test_translation_payload_passes_validation(self) -> None:
+        payload = {
+            "title": "Translation Task",
+            "topic": "public libraries",
+            "task_prompt": "For this part, you are allowed 30 minutes to translate the following Chinese passage into English.",
+            "reference_answer": "In recent years, many Chinese cities have actively promoted the development of public libraries. In addition to lending services, these libraries often organize lectures, reading clubs, and family activities. They have not only enriched the cultural life of residents but also provided a more open and comfortable public space for community interaction.",
+            "rubric_focus": ["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"],
+            "min_response_words": 120,
+            "max_response_words": 220,
+            "shared_options": [],
+            "passage": {
+                "title": "Translation Task",
+                "paragraphs": [
+                    "中国许多城市近年积极推动公共图书馆建设。除了提供借阅服务，这些图书馆还经常举办讲座、读书会和亲子活动，吸引不同年龄的居民主动参加。它们不仅丰富了市民的文化生活，也为社区交流提供了更加开放和舒适的公共空间，使更多家庭能够在日常生活中接触阅读、分享经验并建立更紧密的联系，同时也让社区公共服务显得更加温暖而有活力。"
+                ],
+            },
+            "questions": [],
+            "answer_key": [],
+            "analysis": {
+                "overall_strategy": "先分句，再整理逻辑关系，最后优化英语表达。",
+                "overall_summary": "这道翻译题强调信息准确、表达通顺和语法稳定。",
+                "item_explanations": [],
+                "test_tips": ["先保信息", "再调句式", "最后查语法和搭配"],
+            },
+            "vocabulary": [
+                {"lemma": "community", "surface_form": "community", "level_hint": "cet4", "meaning_zh": "社区", "example_en": "Libraries can strengthen community ties."},
+                {"lemma": "cultural", "surface_form": "cultural", "level_hint": "cet4", "meaning_zh": "文化的", "example_en": "The city offers rich cultural resources."},
+                {"lemma": "interaction", "surface_form": "interaction", "level_hint": "cet4", "meaning_zh": "交流", "example_en": "Public spaces encourage social interaction."},
+            ],
+        }
+        validated = self.validator.validate(payload, Level.CET4, QuestionType.TRANSLATION, None)
+        self.assertEqual(validated["questions"], [])
+        self.assertGreaterEqual(validated["word_count"], 140)
+
 
 if __name__ == "__main__":
     unittest.main()

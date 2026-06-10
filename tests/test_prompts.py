@@ -55,6 +55,16 @@ class PromptTests(unittest.TestCase):
         self.assertIn("exactly 5 four-option multiple-choice questions", spec)
         self.assertIn("main idea, detail, inference, vocabulary in context, and attitude/tone", spec)
 
+    def test_writing_spec_mentions_minimum_words(self) -> None:
+        spec = self.pipeline._question_spec(Level.CET4, QuestionType.WRITING, None)
+        self.assertIn("no less than 120 words", spec)
+        self.assertIn("high-scoring sample essay", spec)
+
+    def test_translation_spec_mentions_chinese_source_length(self) -> None:
+        spec = self.pipeline._question_spec(Level.CET6, QuestionType.TRANSLATION, None)
+        self.assertIn("180-200 Chinese characters", spec)
+        self.assertIn("reference translation", spec)
+
     def test_long_reading_generation_prompt_mentions_paraphrase_matching(self) -> None:
         prompt = self.pipeline._generation_user_prompt(
             Level.CET6,

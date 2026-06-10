@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.ai.client import DeepSeekClient
-from app.ai.pipelines import QuestionGenerationPipeline
+from app.ai.pipelines import QuestionGenerationPipeline, SubjectiveEvaluationPipeline
 from app.config import Settings, get_settings
 from app.data.db import Database
 from app.services.attempt_service import AttemptService
@@ -38,9 +38,10 @@ def build_runtime() -> Runtime:
         else None
     )
     pipeline = QuestionGenerationPipeline(client, settings.deepseek_model)
+    subjective_evaluator = SubjectiveEvaluationPipeline(client, settings.deepseek_model)
     weakness_service = WeaknessService(db)
     question_service = QuestionService(db, pipeline)
-    attempt_service = AttemptService(db, weakness_service)
+    attempt_service = AttemptService(db, weakness_service, subjective_evaluator)
     stats_service = StatsService(db)
     return Runtime(
         settings=settings,
@@ -50,4 +51,3 @@ def build_runtime() -> Runtime:
         stats_service=stats_service,
         weakness_service=weakness_service,
     )
-

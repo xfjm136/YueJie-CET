@@ -423,6 +423,7 @@ enum Action {
     BackSettings,
     BackReview,
     ReviewRedo,
+    ResultViewAnalysis,
     HistoryReview(usize),
     HistoryRedo(usize),
     HistoryDelete(usize),
@@ -977,6 +978,7 @@ struct YueJieRustApp {
     history: Vec<HistoryEntry>,
     history_index: usize,
     review: Option<ReviewBundle>,
+    review_back_screen: Screen,
     review_detail_scroll: u16,
     weakness: Vec<WeaknessEntry>,
     weakness_index: usize,
@@ -1019,6 +1021,7 @@ impl YueJieRustApp {
             history: Vec::new(),
             history_index: 0,
             review: None,
+            review_back_screen: Screen::Home,
             review_detail_scroll: 0,
             weakness: Vec::new(),
             weakness_index: 0,
@@ -1121,7 +1124,7 @@ impl YueJieRustApp {
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
-            } else if self.screen == Screen::Generating {
+            } else if matches!(self.screen, Screen::Generating | Screen::Result) {
                 self.generating_tick = self.generating_tick.wrapping_add(1);
             }
         }
@@ -1364,10 +1367,13 @@ impl YueJieRustApp {
 
     fn handle_result_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char('1') | KeyCode::Enter => self.perform_action(Action::ResultContinue)?,
-            KeyCode::Char('2') => self.perform_action(Action::ResultRedo)?,
-            KeyCode::Char('3') => self.perform_action(Action::ResultBackTypes)?,
-            KeyCode::Char('4') => self.perform_action(Action::ResultBackHome)?,
+            KeyCode::Char('1') | KeyCode::Enter => {
+                self.perform_action(Action::ResultViewAnalysis)?
+            }
+            KeyCode::Char('2') => self.perform_action(Action::ResultContinue)?,
+            KeyCode::Char('3') => self.perform_action(Action::ResultRedo)?,
+            KeyCode::Char('4') => self.perform_action(Action::ResultBackTypes)?,
+            KeyCode::Char('5') => self.perform_action(Action::ResultBackHome)?,
             KeyCode::PageUp => {
                 self.result_detail_scroll = self.result_detail_scroll.saturating_sub(3);
             }
@@ -1553,8 +1559,12 @@ impl YueJieRustApp {
             Action::BackVocabulary => self.return_home()?,
             Action::BackSettings => self.return_home()?,
             Action::BackReview => {
-                self.screen = Screen::History;
-                self.status_line = String::from("已返回刷题历史。");
+                self.screen = self.review_back_screen;
+                self.status_line = if self.review_back_screen == Screen::History {
+                    String::from("已返回刷题历史。")
+                } else {
+                    String::from("已返回结果总览。")
+                };
             }
             Action::HistoryReview(index) => {
                 if let Some(item) = self.history.get(index) {
@@ -1567,6 +1577,7 @@ impl YueJieRustApp {
                         result: review.result,
                         answers: review.answers,
                     });
+                    self.review_back_screen = Screen::History;
                     self.status_line = String::from(
                         "PageUp/PageDown 或滚轮查看复盘详情，Enter/R 可重新作答，Esc 返回历史。",
                     );
@@ -1650,6 +1661,13 @@ impl YueJieRustApp {
                 }
             }
             Action::ResultContinue => self.start_generation()?,
+            Action::ResultViewAnalysis => {
+                self.review_back_screen = Screen::Result;
+                self.status_line = String::from(
+                    "PageUp/PageDown 或滚轮查看完整解析，R 可重做，Esc 返回结果总览。",
+                );
+                self.screen = Screen::Review;
+            }
             Action::ResultRedo => {
                 if let Some(practice) = &self.practice {
                     let question_set = practice.question_set.clone();
@@ -1834,11 +1852,16 @@ impl YueJieRustApp {
                 &practice.answers,
                 practice.is_history_retry,
             )?;
-            self.result = Some(response.result);
+            let result = response.result.clone();
+            self.review = Some(ReviewBundle {
+                question_set: practice.question_set.clone(),
+                result: result.clone(),
+                answers: practice.answers.clone(),
+            });
+            self.review_back_screen = Screen::Result;
+            self.result = Some(result);
             self.result_detail_scroll = 0;
-            self.status_line = String::from(
-                "PageUp/PageDown 或滚轮查看解析；Enter 继续同题型，2 重做本题，3 返回题型，4 回到首页。",
-            );
+            self.status_line = String::from("Enter/1 查看解析，2 下一题，3 重做，4 题型，5 首页。");
             self.screen = Screen::Result;
         }
         Ok(())
@@ -2602,22 +2625,24 @@ impl YueJieRustApp {
         let Some(practice) = self.practice.clone() else {
             return;
         };
-        let outer = centered_rect(94, 92, area);
+        let outer = centered_rect(76, 72, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4),
-                Constraint::Length(6),
                 Constraint::Length(8),
-                Constraint::Min(8),
+                Constraint::Length(5),
+                Constraint::Length(7),
+                Constraint::Length(7),
                 Constraint::Length(5),
                 Constraint::Length(1),
             ])
             .split(outer);
 
+        let accuracy_percent = (result.accuracy * 100.0).round().clamp(0.0, 99.0) as i64;
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(Span::styled("本次训练已完成", title_style(palette))),
+                Line::from(Span::styled("本次作答已完成", title_style(palette))),
                 Line::from(Span::styled(
                     format!(
                         "{} · {} · {}",
@@ -2634,6 +2659,23 @@ impl YueJieRustApp {
             .alignment(Alignment::Center)
             .block(simple_block("", palette)),
             chunks[0],
+        );
+
+        frame.render_widget(
+            Paragraph::new(Text::from({
+                let mut lines = big_timer_lines(&format!("{:02}", accuracy_percent));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("{}%  正确率", accuracy_percent),
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines
+            }))
+            .alignment(Alignment::Center)
+            .block(simple_block("结果速览", palette)),
+            chunks[1],
         );
 
         let stats = Layout::default()
@@ -2668,14 +2710,10 @@ impl YueJieRustApp {
             palette,
             "状态",
             accuracy_band(result.accuracy),
-            "建议看复盘摘要",
-            None,
+            "查看完整解析",
+            Some(0.62 + ((self.generating_tick % 8) as f64 / 20.0)),
         );
 
-        let middle = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
-            .split(chunks[2]);
         let recommendation_lines = if result.recommendations.is_empty() {
             vec![Line::from("继续保持当前节奏。")]
         } else {
@@ -2685,105 +2723,59 @@ impl YueJieRustApp {
                 .map(|item| Line::from(format!("• {}", item)))
                 .collect::<Vec<_>>()
         };
-        let mut left_lines = vec![
-            Line::from(Span::styled("结果摘要", title_style(palette))),
-            Line::from(""),
-            Line::from(result.summary.clone()),
-            Line::from(""),
-            Line::from(format!(
-                "来源：{} / 模型：{}",
-                practice.question_set.source_type, practice.question_set.generator_model
-            )),
-            Line::from(format!("主题：{}", practice.question_set.topic)),
-            Line::from(""),
-        ];
-        left_lines.extend(recommendation_lines);
         frame.render_widget(
-            Paragraph::new(Text::from(left_lines))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("复盘摘要", palette)),
-            middle[0],
-        );
-
-        let vocab_lines = if practice.question_set.vocabulary.is_empty() {
-            vec![Line::from("本题暂未提取重点词汇。")]
-        } else {
-            practice
-                .question_set
-                .vocabulary
-                .iter()
-                .take(6)
-                .map(|item| {
-                    Line::from(format!(
-                        "{} ({}) - {}",
-                        item.surface_form, item.level_hint, item.meaning_zh
-                    ))
-                })
-                .collect::<Vec<_>>()
-        };
-        let right = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(4)])
-            .split(middle[1]);
-        let mut skill_lines = vec![
-            Line::from(Span::styled("技能表现", title_style(palette))),
-            Line::from(""),
-        ];
-        skill_lines.extend(build_skill_summary_lines(&result.question_results));
-        frame.render_widget(
-            Paragraph::new(Text::from(skill_lines))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("能力分布", palette)),
-            right[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Text::from(vocab_lines))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("重点词汇", palette)),
-            right[1],
-        );
-
-        let mut lines = vec![Line::from(Span::styled(
-            "逐题解析",
-            Style::default()
-                .fg(palette.accent)
-                .add_modifier(Modifier::BOLD),
-        ))];
-        for (index, item) in result.question_results.iter().enumerate() {
-            lines.push(Line::from(format!(
-                "{}. 你的答案 {} / 正确答案 {}",
-                index + 1,
-                blank_or_value(&item.user_answer),
-                item.correct_answer
-            )));
-            lines.push(Line::from(format!("   {}", item.explanation)));
-        }
-        let detail = Paragraph::new(Text::from(lines))
+            Paragraph::new(Text::from(vec![
+                Line::from(result.summary.clone()),
+                Line::from(""),
+                Line::from(format!(
+                    "来源：{} / 模型：{} / 主题：{}",
+                    practice.question_set.source_type,
+                    practice.question_set.generator_model,
+                    practice.question_set.topic
+                )),
+            ]))
+            .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
-            .scroll((self.result_detail_scroll, 0))
-            .block(simple_block("解析（可滚动）", palette));
-        frame.render_widget(detail, chunks[3]);
+            .block(simple_block("结果摘要", palette)),
+            chunks[3],
+        );
+
+        frame.render_widget(
+            Paragraph::new(Text::from(recommendation_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("下一步建议", palette)),
+            chunks[4],
+        );
 
         let buttons = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
+                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 5),
+                Constraint::Ratio(1, 5),
             ])
-            .split(chunks[4]);
+            .split(chunks[5]);
         self.draw_action_button(
             frame,
             buttons[0],
             palette,
-            "继续该题型",
+            "查看解析",
             true,
-            Action::ResultContinue,
+            Action::ResultViewAnalysis,
         );
         self.draw_action_button(
             frame,
             buttons[1],
+            palette,
+            "下一题",
+            false,
+            Action::ResultContinue,
+        );
+        self.draw_action_button(
+            frame,
+            buttons[2],
             palette,
             "重做本题",
             false,
@@ -2791,7 +2783,7 @@ impl YueJieRustApp {
         );
         self.draw_action_button(
             frame,
-            buttons[2],
+            buttons[3],
             palette,
             "题型选择",
             false,
@@ -2799,13 +2791,13 @@ impl YueJieRustApp {
         );
         self.draw_action_button(
             frame,
-            buttons[3],
+            buttons[4],
             palette,
             "回到首页",
             false,
             Action::ResultBackHome,
         );
-        self.draw_status_line(frame, chunks[5], palette);
+        self.draw_status_line(frame, chunks[6], palette);
     }
 
     fn draw_history(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
@@ -3049,6 +3041,7 @@ impl YueJieRustApp {
         let Some(bundle) = self.review.clone() else {
             return;
         };
+        let from_history = self.review_back_screen == Screen::History;
         let outer = centered_rect(96, 96, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -3062,7 +3055,14 @@ impl YueJieRustApp {
             ])
             .split(outer);
         let header = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled("历史复盘", title_style(palette))),
+            Line::from(Span::styled(
+                if from_history {
+                    "历史复盘"
+                } else {
+                    "本次详解"
+                },
+                title_style(palette),
+            )),
             Line::from(format!(
                 "{} · {} · {}",
                 format_question_label(&bundle.question_set.question_type, bundle.question_set.slot),
@@ -3100,7 +3100,11 @@ impl YueJieRustApp {
             palette,
             "用时",
             &seconds_to_text(bundle.result.duration_seconds),
-            "历史作答时长",
+            if from_history {
+                "历史作答时长"
+            } else {
+                "本次作答时长"
+            },
             None,
         );
         self.draw_metric_box(
@@ -3215,7 +3219,11 @@ impl YueJieRustApp {
             frame,
             buttons[1],
             palette,
-            "返回历史",
+            if from_history {
+                "返回历史"
+            } else {
+                "返回结果"
+            },
             false,
             Action::BackReview,
         );

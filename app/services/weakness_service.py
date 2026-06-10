@@ -38,6 +38,10 @@ class WeaknessService:
                 total_by_skill[skill] += 1
                 if not item.get("is_correct", False):
                     wrong_by_skill[skill] += 1
+            subjective = result.get("subjective_evaluation") or {}
+            for skill in subjective.get("weakness_tags", []):
+                total_by_skill[skill] += 1
+                wrong_by_skill[skill] += 1
 
         dimensions = {
             skill: round(100 * (1 - wrong_by_skill[skill] / total), 2)

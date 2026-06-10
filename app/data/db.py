@@ -297,6 +297,7 @@ class Database:
         aggregates: dict[str, dict[str, Any]] = {}
         for row in rows:
             question_set = QuestionSet.from_dict(json.loads(row["payload_json"]))
+            result_json = json.loads(row["result_json"])
             seen_at = row["submitted_at"]
             for item in question_set.vocabulary:
                 entry = aggregates.get(item.lemma)
@@ -318,6 +319,31 @@ class Database:
                     entry["example_en"] = item.example_en
                     entry["frequency_score"] += max(int(item.frequency_score), 1)
                     entry["error_related_score"] += int(item.error_related_score)
+                    entry["last_seen_at"] = seen_at
+            subjective = result_json.get("subjective_evaluation") or {}
+            for item in subjective.get("wrong_words", []):
+                corrected = str(item.get("corrected", "")).strip()
+                if not corrected:
+                    continue
+                lemma = corrected.lower()
+                entry = aggregates.get(lemma)
+                if entry is None:
+                    aggregates[lemma] = {
+                        "lemma": lemma,
+                        "surface_form": corrected,
+                        "level_hint": question_set.level.value,
+                        "meaning_zh": str(item.get("meaning_zh", "")).strip(),
+                        "example_en": corrected,
+                        "frequency_score": 1,
+                        "error_related_score": 1,
+                        "last_seen_at": seen_at,
+                    }
+                else:
+                    entry["surface_form"] = corrected
+                    if not entry["meaning_zh"]:
+                        entry["meaning_zh"] = str(item.get("meaning_zh", "")).strip()
+                    entry["error_related_score"] += 1
+                    entry["frequency_score"] += 1
                     entry["last_seen_at"] = seen_at
 
         for item in aggregates.values():
