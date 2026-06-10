@@ -18,6 +18,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("10 blanks", spec)
         self.assertIn("15 shared options", spec)
         self.assertIn("[1]...[10]", spec)
+        self.assertIn("one English word only", spec)
 
     def test_question_spec_long_reading_matches_cet_requirements(self) -> None:
         spec = self.pipeline._question_spec(Level.CET6, QuestionType.LONG_READING, None)
@@ -46,6 +47,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Ensure every answer is uniquely supported", prompt)
         self.assertIn("Use concise Chinese explanations", prompt)
         self.assertIn('"options": ["A. ...", "B. ...", "C. ...", "D. ..."]', prompt)
+        self.assertIn("All of the above", prompt)
 
     def test_careful_reading_spec_mentions_core_question_types(self) -> None:
         spec = self.pipeline._question_spec(Level.CET6, QuestionType.CAREFUL_READING, 2)
@@ -74,6 +76,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Paragraphs must be labeled", prompt)
         self.assertIn('"shared_options": []', prompt)
         self.assertIn('"prompt": "English statement to match"', prompt)
+        self.assertIn("statement rather than a question", prompt)
 
     def test_generation_prompt_mentions_cet_source_style_and_background_limits(self) -> None:
         prompt = self.pipeline._generation_user_prompt(
@@ -95,6 +98,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Background knowledge must be common or recoverable", prompt)
         self.assertIn("Do not write in a dramatic, fictional, or conversational blog style", prompt)
         self.assertIn('"prompt": "Blank 1"', prompt)
+        self.assertIn("one English word", prompt)
+        self.assertIn("Do not place Chinese characters", prompt)
 
     def test_blueprint_builds_target_counts_and_skill_focus(self) -> None:
         blueprint = self.pipeline._build_blueprint(

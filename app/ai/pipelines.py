@@ -167,6 +167,7 @@ class QuestionGenerationPipeline:
             return (
                 f"{word_spec} Use 10 blanks in the passage marked [1]...[10]. "
                 "Provide exactly 15 shared options labeled A. to O. "
+                "Each shared option must be one English word only, not a phrase or clause. "
                 "Targets and distractors should be CET-like in part of speech and collocation difficulty. "
                 "Each of the 10 answers must use a different letter; no option may be reused."
             )
@@ -174,13 +175,15 @@ class QuestionGenerationPipeline:
             word_spec = "CET4 850-1150 words; CET6 1050-1350 words."
             return (
                 f"{word_spec} Provide exactly 10 statements for paragraph matching. "
-                "Paragraphs must be labeled A., B., C. ... with 10-14 total paragraphs, and at least one paragraph should be redundant or one paragraph may answer more than one item."
+                "Paragraphs must be labeled A., B., C. ... with 10-14 total paragraphs, and at least one paragraph should be redundant or one paragraph may answer more than one item. "
+                "Each matching item must be an English statement, not a question, and must not include paragraph labels."
             )
         word_spec = "CET4 290-360 words; CET6 390-470 words."
         slot_hint = f"This is careful reading slot {slot}. " if slot else ""
         return (
             f"{slot_hint}{word_spec} Provide exactly 5 four-option multiple-choice questions. "
-            "Use this distribution exactly once each: main idea, detail, inference, vocabulary in context, and attitude/tone."
+            "Use this distribution exactly once each: main idea, detail, inference, vocabulary in context, and attitude/tone. "
+            "Question stems must be English-only; avoid trick options like All of the above or None of the above."
         )
 
     def _generation_system_prompt(self) -> str:
@@ -229,10 +232,14 @@ class QuestionGenerationPipeline:
             "- Keep analysis concise: overall_summary in 2-4 Chinese sentences, test_tips exactly 3 items, item_explanations focused on evidence and method.\n"
             "- Provide exactly the requested number of vocabulary items, not more.\n"
             "- Only analysis.* and vocabulary.meaning_zh may be in Chinese; the rest must be in English.\n"
+            "- Do not place Chinese characters in title, topic, passage, question prompts, shared options, answer options, or example_en.\n"
             "- For banked cloze, the 15 options must be shared options only, not repeated per blank.\n"
+            "- For banked cloze, every shared option must be exactly one English word, not a phrase.\n"
             "- For banked cloze, each answer letter may be used only once.\n"
             "- For long reading, statements must be paraphrases, not direct copies of paragraph openings.\n"
+            "- For long reading, every item prompt must be a statement rather than a question and must not include A./B./C. labels.\n"
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
+            "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
             "- Do not write in a dramatic, fictional, or conversational blog style.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
             f"Question-type details:\n{self._question_type_details(question_type)}\n"
@@ -959,17 +966,19 @@ class QuestionGenerationPipeline:
             return (
                 "- questions must contain 10 items, one per blank, with prompts like Blank 1, Blank 2, ...\n"
                 "- shared_options must contain exactly 15 entries labeled A. to O.\n"
+                "- each shared option must be a single English word only.\n"
                 "- answer_key must contain exactly 10 letters, each letter must exist in shared_options, and no letter may repeat."
             )
         if question_type is QuestionType.LONG_READING:
             return (
                 "- passage.paragraphs must contain labeled paragraphs beginning with A., B., C. ...\n"
-                "- questions must contain 10 English statements for matching.\n"
+                "- questions must contain 10 English statements for matching, not questions.\n"
                 "- answer_key must contain paragraph letters only."
             )
         return (
             "- questions must contain exactly 5 items.\n"
             "- each question must contain exactly 4 options labeled A. to D.\n"
+            "- do not use All of the above or None of the above.\n"
             "- answer_key must contain exactly 5 letters from A to D."
         )
 
@@ -1005,6 +1014,16 @@ class QuestionGenerationPipeline:
             return (
                 f"The current passage is too long. Trim the English passage only by about {trim_by} words "
                 f"so the final passage safely lands within {lower}-{upper} words. Keep question ids, answer_key, and analysis alignment intact."
+            )
+        if "中文" in joined or "Chinese" in joined:
+            return (
+                "Remove Chinese characters from all English-only fields such as title, topic, passage, prompts, options, and example_en. "
+                "Keep Chinese only inside analysis.* and vocabulary.meaning_zh."
+            )
+        if "单个英文词" in joined or "single English word" in joined:
+            return (
+                "Rewrite every banked-cloze shared option as one English word only. "
+                "Do not use phrases, clauses, or multi-word expressions."
             )
         if question_type is QuestionType.LONG_READING:
             return (

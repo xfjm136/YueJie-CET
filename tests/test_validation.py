@@ -173,6 +173,160 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(QuestionSetValidationError):
             self.validator.validate(payload, Level.CET4, QuestionType.BANKED_CLOZE, None)
 
+    def test_banked_cloze_rejects_phrase_shared_option(self) -> None:
+        payload = {
+            "title": "Study Habits",
+            "topic": "study",
+            "shared_options": [
+                "A. in fact",
+                "B. adapt",
+                "C. benefit",
+                "D. challenge",
+                "E. connect",
+                "F. efficient",
+                "G. flexible",
+                "H. maintain",
+                "I. pressure",
+                "J. routine",
+                "K. source",
+                "L. strategy",
+                "M. transform",
+                "N. value",
+                "O. virtual",
+            ],
+            "passage": {
+                "title": "Study Habits",
+                "paragraphs": [
+                    "Online learning became a more [1] part of student life in recent years. Many learners had to [2] with new tools quickly, but the shift also created a [3] when planning was weak. Teachers noticed that students often logged in on time yet still felt lost because they had not formed stable reading habits. In many classrooms, digital platforms gave learners more choices, but they also demanded greater self-control, clearer weekly goals, and more careful review of notes after class. Students who lacked these habits usually spent more time online without making much progress in understanding difficult materials.",
+                    "A useful [4] is to divide study time into short blocks. This makes work more [5] and reduces the [6] that comes from trying to finish everything at once. A regular [7] also helps students stay focused. Some learners prepare a list of small daily tasks, while others create a weekly reading calendar and check their progress every evening. The specific method may differ, but the general principle is the same: students need a predictable structure if they want to read carefully, remember details, and avoid the anxiety that comes from rushed preparation before an important test.",
+                    "Still, a good plan should remain [8]. Different tasks require different levels of [9], and students need to remember the long-term [10] of steady reading rather than last-minute effort. When a text contains abstract ideas, students should slow down, review key sentences, and connect new information with what they have learned before.",
+                ],
+            },
+            "questions": [
+                {"id": f"q{i}", "prompt": f"Blank {i}", "options": [], "skill_tag": "vocabulary", "hint": None}
+                for i in range(1, 11)
+            ],
+            "answer_key": ["O", "E", "D", "L", "F", "I", "J", "G", "A", "N"],
+            "analysis": {
+                "overall_strategy": "先判断逻辑和词性。",
+                "overall_summary": "考查语境词义和搭配。",
+                "item_explanations": [
+                    {
+                        "question_id": f"q{i}",
+                        "correct_answer": answer,
+                        "explanation": "结合上下文和词性可确定答案。",
+                        "skill_tag": "vocabulary",
+                    }
+                    for i, answer in enumerate(["O", "E", "D", "L", "F", "I", "J", "G", "A", "N"], start=1)
+                ],
+                "test_tips": ["先易后难", "先看词性", "注意上下文逻辑"],
+            },
+            "vocabulary": [
+                {"lemma": "virtual", "surface_form": "virtual", "level_hint": "cet4", "meaning_zh": "虚拟的", "example_en": ""},
+                {"lemma": "strategy", "surface_form": "strategy", "level_hint": "cet4", "meaning_zh": "策略", "example_en": ""},
+                {"lemma": "routine", "surface_form": "routine", "level_hint": "cet4", "meaning_zh": "惯例", "example_en": ""},
+            ],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET4, QuestionType.BANKED_CLOZE, None)
+
+    def test_validator_rejects_chinese_in_english_fields(self) -> None:
+        payload = {
+            "title": "Study Habits",
+            "topic": "学习",
+            "shared_options": [
+                "A. access", "B. adapt", "C. benefit", "D. challenge", "E. connect",
+                "F. efficient", "G. flexible", "H. maintain", "I. pressure", "J. routine",
+                "K. source", "L. strategy", "M. transform", "N. value", "O. virtual",
+            ],
+            "passage": {
+                "title": "Study Habits",
+                "paragraphs": [
+                    "Online learning became a more [1] part of student life in recent years. Many learners had to [2] with new tools quickly, but the shift also created a [3] when planning was weak. Teachers noticed that students often logged in on time yet still felt lost because they had not formed stable reading habits. In many classrooms, digital platforms gave learners more choices, but they also demanded greater self-control, clearer weekly goals, and more careful review of notes after class. Students who lacked these habits usually spent more time online without making much progress in understanding difficult materials.",
+                    "A useful [4] is to divide study time into short blocks. This makes work more [5] and reduces the [6] that comes from trying to finish everything at once. A regular [7] also helps students stay focused. Some learners prepare a list of small daily tasks, while others create a weekly reading calendar and check their progress every evening. The specific method may differ, but the general principle is the same: students need a predictable structure if they want to read carefully, remember details, and avoid the anxiety that comes from rushed preparation before an important test.",
+                    "Still, a good plan should remain [8]. Different tasks require different levels of [9], and students need to remember the long-term [10] of steady reading rather than last-minute effort. When a text contains abstract ideas, students should slow down, review key sentences, and connect new information with what they have learned before.",
+                ],
+            },
+            "questions": [
+                {"id": f"q{i}", "prompt": f"Blank {i}", "options": [], "skill_tag": "vocabulary", "hint": None}
+                for i in range(1, 11)
+            ],
+            "answer_key": ["O", "E", "D", "L", "F", "I", "J", "G", "A", "N"],
+            "analysis": {
+                "overall_strategy": "先判断逻辑和词性。",
+                "overall_summary": "考查语境词义和搭配。",
+                "item_explanations": [
+                    {
+                        "question_id": f"q{i}",
+                        "correct_answer": answer,
+                        "explanation": "结合上下文和词性可确定答案。",
+                        "skill_tag": "vocabulary",
+                    }
+                    for i, answer in enumerate(["O", "E", "D", "L", "F", "I", "J", "G", "A", "N"], start=1)
+                ],
+                "test_tips": ["先易后难", "先看词性", "注意上下文逻辑"],
+            },
+            "vocabulary": [
+                {"lemma": "virtual", "surface_form": "virtual", "level_hint": "cet4", "meaning_zh": "虚拟的", "example_en": ""},
+                {"lemma": "strategy", "surface_form": "strategy", "level_hint": "cet4", "meaning_zh": "策略", "example_en": ""},
+                {"lemma": "routine", "surface_form": "routine", "level_hint": "cet4", "meaning_zh": "惯例", "example_en": ""},
+            ],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET4, QuestionType.BANKED_CLOZE, None)
+
+    def test_long_reading_rejects_question_like_prompts(self) -> None:
+        payload = {
+            "title": "Urban Planning and Green Design",
+            "topic": "urban planning",
+            "shared_options": [],
+            "passage": {
+                "title": "Urban Planning and Green Design",
+                "paragraphs": [
+                    "A. City planners once focused mainly on traffic flow and housing supply, but many now consider how public spaces shape emotional well-being and social trust among residents.",
+                    "B. One reason for this change is that green design often improves not only visual quality but also daily comfort, especially in neighborhoods with limited private space.",
+                    "C. Researchers have found that tree cover can reduce local temperatures, soften traffic noise, and encourage longer outdoor stays, all of which may affect social contact.",
+                    "D. However, simply adding plants does not guarantee success, because design must match how people actually move, rest, and gather within a neighborhood.",
+                    "E. Some cities have redesigned school routes so that children walk through safer and greener streets, hoping to build healthier habits early in life.",
+                    "F. In commercial districts, planners often face the opposite challenge: they need lively public areas without creating crowding that discourages older residents from using them.",
+                    "G. This is why planners increasingly collect local feedback before redesigning a square, a path, or a transport hub that affects many routines at once.",
+                    "H. Digital tools also help, since simulation models can predict where shade, seating, and open sight lines may improve public use at different hours.",
+                    "I. Even so, experts warn that models should guide rather than replace observation, because local habits sometimes produce outcomes that data alone cannot anticipate.",
+                    "J. In the end, successful green design depends on balancing environmental goals with how residents actually experience streets, parks, and shared facilities.",
+                    "K. A well-used public area is usually the result of many small design choices working together rather than one dramatic architectural gesture.",
+                ],
+            },
+            "questions": [
+                {"id": "q1", "prompt": "What has changed in the priorities of city planners?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q2", "prompt": "Why is green design useful in dense neighborhoods?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q3", "prompt": "What can tree cover influence in cities?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q4", "prompt": "Why might planting alone be insufficient?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q5", "prompt": "How have some cities changed school routes?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q6", "prompt": "What challenge exists in busy commercial districts?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q7", "prompt": "Why is local feedback increasingly collected?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q8", "prompt": "How can digital tools support green design?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q9", "prompt": "Why should models not replace real observation?", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q10", "prompt": "What determines successful green design in the end?", "options": [], "skill_tag": "matching", "hint": None},
+            ],
+            "answer_key": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"],
+            "analysis": {
+                "overall_strategy": "先看关键词，再定位同义改写。",
+                "overall_summary": "文章讨论城市绿色设计与公共空间规划。",
+                "item_explanations": [
+                    {"question_id": f"q{i}", "correct_answer": chr(ord('A') + i - 1), "explanation": "对应原文信息。", "skill_tag": "matching"}
+                    for i in range(1, 11)
+                ],
+                "test_tips": ["先扫题干", "再回文定位", "关注同义改写"],
+            },
+            "vocabulary": [
+                {"lemma": "resident", "surface_form": "residents", "level_hint": "cet6", "meaning_zh": "居民", "example_en": ""},
+                {"lemma": "gesture", "surface_form": "gesture", "level_hint": "cet6", "meaning_zh": "姿态；举措", "example_en": ""},
+                {"lemma": "simulation", "surface_form": "simulation", "level_hint": "cet6", "meaning_zh": "模拟", "example_en": ""},
+            ],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET6, QuestionType.LONG_READING, None)
+
 
 if __name__ == "__main__":
     unittest.main()

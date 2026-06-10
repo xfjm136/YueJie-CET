@@ -78,6 +78,8 @@ class CETQuestionValidator:
         if len(normalized.get("vocabulary", [])) < 3:
             errors.append("vocabulary 至少应提供 3 个重点词汇")
 
+        self._validate_language_boundaries(normalized, errors)
+
         if question_type is QuestionType.BANKED_CLOZE:
             self._validate_banked_cloze(normalized, level, actual_word_count, errors)
         elif question_type is QuestionType.LONG_READING:
@@ -152,6 +154,62 @@ class CETQuestionValidator:
     def _word_count(paragraphs: list[str]) -> int:
         return len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", " ".join(paragraphs)))
 
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+    @staticmethod
+    def _looks_like_single_english_word(text: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", text))
+
+    def _validate_language_boundaries(
+        self,
+        payload: dict[str, Any],
+        errors: list[str],
+    ) -> None:
+        english_only_fields = [
+            ("title", payload.get("title", "")),
+            ("topic", payload.get("topic", "")),
+            ("passage.title", payload.get("passage", {}).get("title", "")),
+        ]
+        for field_name, value in english_only_fields:
+            text = str(value).strip()
+            if not text:
+                errors.append(f"{field_name} 不能为空")
+            elif self._contains_cjk(text):
+                errors.append(f"{field_name} 必须为英文，不应包含中文")
+
+        for index, paragraph in enumerate(payload.get("passage", {}).get("paragraphs", []), start=1):
+            if self._contains_cjk(paragraph):
+                errors.append(f"passage.paragraphs 第 {index} 段必须为英文，不应包含中文")
+
+        for index, question in enumerate(payload.get("questions", []), start=1):
+            prompt = str(question.get("prompt", "")).strip()
+            if not prompt:
+                errors.append(f"questions 第 {index} 题 prompt 不能为空")
+            elif self._contains_cjk(prompt):
+                errors.append(f"questions 第 {index} 题 prompt 必须为英文，不应包含中文")
+            for option_index, option in enumerate(question.get("options", []), start=1):
+                if self._contains_cjk(option):
+                    errors.append(
+                        f"questions 第 {index} 题 option {option_index} 必须为英文，不应包含中文"
+                    )
+
+        for index, option in enumerate(payload.get("shared_options", []), start=1):
+            if self._contains_cjk(option):
+                errors.append(f"shared_options 第 {index} 项必须为英文，不应包含中文")
+
+        for index, item in enumerate(payload.get("vocabulary", []), start=1):
+            if self._contains_cjk(item.get("lemma", "")):
+                errors.append(f"vocabulary 第 {index} 项 lemma 必须为英文")
+            if self._contains_cjk(item.get("surface_form", "")):
+                errors.append(f"vocabulary 第 {index} 项 surface_form 必须为英文")
+            example_en = str(item.get("example_en", "")).strip()
+            if example_en and self._contains_cjk(example_en):
+                errors.append(f"vocabulary 第 {index} 项 example_en 必须为英文")
+            if not self._contains_cjk(item.get("meaning_zh", "")):
+                errors.append(f"vocabulary 第 {index} 项 meaning_zh 应提供中文释义")
+
     def _validate_banked_cloze(
         self,
         payload: dict[str, Any],
@@ -184,6 +242,8 @@ class CETQuestionValidator:
                 errors.append(f"共享选项格式不正确：{raw}")
                 continue
             letter, content = match.groups()
+            if not self._looks_like_single_english_word(content.strip()):
+                errors.append(f"共享选项 {letter} 必须是单个英文词，不可为短语：{content.strip()}")
             option_letters.append(letter)
             normalized_options.append(f"{letter}. {content.strip()}")
         if len(set(option_letters)) != len(option_letters):
@@ -221,6 +281,13 @@ class CETQuestionValidator:
         for index, question in enumerate(questions, start=1):
             if question.get("options"):
                 errors.append(f"长篇阅读第 {index} 题不应包含独立 options")
+            prompt = str(question.get("prompt", "")).strip()
+            if prompt.endswith("?"):
+                errors.append(f"长篇阅读第 {index} 题必须写成陈述句，不应为问句")
+            if re.match(r"^[A-Z][\.\)]\s", prompt):
+                errors.append(f"长篇阅读第 {index} 题 prompt 不应包含段落标签前缀")
+            if len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", prompt)) < 5:
+                errors.append(f"长篇阅读第 {index} 题 prompt 过短，不像完整匹配陈述句")
 
         paragraphs = payload["passage"]["paragraphs"]
         if not 10 <= len(paragraphs) <= 14:
@@ -274,6 +341,20 @@ class CETQuestionValidator:
             option_letters = [option[:1] for option in question.get("options", [])]
             if option_letters != ["A", "B", "C", "D"]:
                 errors.append(f"仔细阅读第 {index} 题 options 必须按 A-D 标注")
+            normalized_options = [option[3:].strip().lower() for option in question.get("options", []) if len(option) >= 3]
+            if len(set(normalized_options)) != len(normalized_options):
+                errors.append(f"仔细阅读第 {index} 题 4 个选项内容必须互不重复")
+            if any(option in {"all of the above", "none of the above"} for option in normalized_options):
+                errors.append(f"仔细阅读第 {index} 题不得使用 All/None of the above 类选项")
+            prompt = str(question.get("prompt", "")).strip().lower()
+            vocab_like = (
+                "most likely means" in prompt
+                or "most nearly means" in prompt
+                or "closest in meaning" in prompt
+                or "refers to" in prompt
+            )
+            if not vocab_like and not prompt.endswith("?"):
+                errors.append(f"仔细阅读第 {index} 题题干应为标准英文问句")
         if len(payload["answer_key"]) != 5:
             errors.append("仔细阅读 answer_key 必须有 5 项")
         for answer in payload["answer_key"]:
