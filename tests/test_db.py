@@ -11,7 +11,11 @@ from app.domain.schemas import (
     Passage,
     Question,
     QuestionSet,
+    ScoreDimension,
+    SentenceRewrite,
+    SubjectiveEvaluation,
     VocabularyItem,
+    WordCorrection,
 )
 from app.services.attempt_service import AttemptService
 from app.services.weakness_service import WeaknessService
@@ -36,6 +40,104 @@ def build_question_set() -> QuestionSet:
         vocabulary=[VocabularyItem("demo", "demo", "cet4", "示例")],
         shared_options=["A. demo", "B. test"],
     )
+
+
+def build_subjective_question_set(question_type: QuestionType = QuestionType.WRITING) -> QuestionSet:
+    passage_lines = (
+        [
+            "In recent years, digital tools have become part of campus life.",
+            "Write an essay on balancing efficiency and independent thinking.",
+        ]
+        if question_type is QuestionType.WRITING
+        else [
+            "如今，越来越多的大学生开始使用人工智能工具辅助学习，但真正的进步仍然离不开独立思考、持续练习与自我反思。",
+            "请将上文翻译成英文。",
+        ]
+    )
+    return QuestionSet(
+        id=f"qs_{question_type.value}",
+        level=Level.CET4,
+        question_type=question_type,
+        title="Subjective Demo",
+        topic="ai and learning",
+        passage=Passage(title="Subjective Demo", paragraphs=passage_lines),
+        questions=[],
+        answer_key=[],
+        analysis=AnalysisReport(
+            overall_strategy="demo",
+            overall_summary="demo",
+            item_explanations=[],
+            test_tips=[],
+        ),
+        vocabulary=[VocabularyItem("reflection", "reflection", "cet4", "反思")],
+        task_prompt=(
+            "Write an essay in no less than 120 words."
+            if question_type is QuestionType.WRITING
+            else "Translate the Chinese passage into English."
+        ),
+        reference_answer="Sample reference answer.",
+        rubric_focus=(
+            ["content_relevance", "coherence", "grammar", "lexical_accuracy"]
+            if question_type is QuestionType.WRITING
+            else ["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"]
+        ),
+        min_response_words=120,
+        max_response_words=220,
+    )
+
+
+class FakeSubjectiveEvaluator:
+    def evaluate(
+        self,
+        question_set: QuestionSet,
+        response_text: str,
+        duration_seconds: int,
+    ) -> SubjectiveEvaluation:
+        return SubjectiveEvaluation(
+            score_15=10.5,
+            estimated_reported_score=78.0,
+            grade_band="中等",
+            overall_feedback_zh=f"{question_set.question_type.value} 评阅已完成",
+            score_dimensions=[
+                ScoreDimension("grammar", 2.5, 4.0, "语法仍需加强。"),
+                ScoreDimension("lexical_accuracy", 2.5, 3.0, "词汇准确性一般。"),
+                ScoreDimension(
+                    "content_relevance"
+                    if question_set.question_type is QuestionType.WRITING
+                    else "translation_accuracy",
+                    3.0,
+                    4.0,
+                    "内容基本达标。",
+                ),
+                ScoreDimension(
+                    "coherence"
+                    if question_set.question_type is QuestionType.WRITING
+                    else "translation_fluency",
+                    2.5,
+                    4.0,
+                    "连贯性仍可提升。",
+                ),
+            ],
+            wrong_words=[
+                WordCorrection(
+                    original="useing",
+                    corrected="using",
+                    reason_zh="拼写错误。",
+                    meaning_zh="使用",
+                    skill_tag="lexical_accuracy",
+                )
+            ],
+            sentence_rewrites=[
+                SentenceRewrite(
+                    original_sentence="This make students lazy.",
+                    revised_sentence="This makes some students overly dependent on shortcuts.",
+                    reason_zh="主谓一致错误。",
+                    skill_tag="grammar",
+                )
+            ],
+            high_score_version="A polished high-score version.",
+            weakness_tags=["grammar", "lexical_accuracy"],
+        )
 
 
 class DatabaseTests(unittest.TestCase):
@@ -89,6 +191,66 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(db.list_history(limit=10), [])
             self.assertEqual(db.list_vocabulary(limit=10), [])
             self.assertIsNone(db.get_question_set(question_set.id))
+
+    def test_subjective_attempt_adds_wrong_words_to_vocabulary(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+            question_set = build_subjective_question_set(QuestionType.WRITING)
+            db.save_question_set(question_set)
+
+            attempt_service = AttemptService(
+                db,
+                WeaknessService(db),
+                subjective_evaluator=FakeSubjectiveEvaluator(),
+            )
+            started_at = datetime.now(timezone.utc) - timedelta(minutes=12)
+            result = attempt_service.submit_attempt(
+                question_set=question_set,
+                answers={"response_text": "A short essay draft."},
+                started_at=started_at,
+                is_history_retry=False,
+            )
+
+            vocab = db.list_vocabulary(limit=20)
+            vocab_by_lemma = {item["lemma"]: item for item in vocab}
+
+            self.assertIsNotNone(result.subjective_evaluation)
+            self.assertEqual(result.question_results[0]["question_id"] if isinstance(result.question_results[0], dict) else result.question_results[0].question_id, "subjective-1")
+            self.assertIn("reflection", vocab_by_lemma)
+            self.assertIn("using", vocab_by_lemma)
+            self.assertEqual(vocab_by_lemma["using"]["meaning_zh"], "使用")
+            self.assertGreaterEqual(vocab_by_lemma["using"]["error_related_score"], 1)
+
+    def test_subjective_attempts_build_weakness_snapshot(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+            question_set = build_subjective_question_set(QuestionType.TRANSLATION)
+            db.save_question_set(question_set)
+
+            attempt_service = AttemptService(
+                db,
+                WeaknessService(db),
+                subjective_evaluator=FakeSubjectiveEvaluator(),
+            )
+            for offset in range(5):
+                started_at = datetime.now(timezone.utc) - timedelta(minutes=10 + offset)
+                attempt_service.submit_attempt(
+                    question_set=question_set,
+                    answers={"response_text": "A translated response."},
+                    started_at=started_at,
+                    is_history_retry=False,
+                )
+
+            snapshots = db.list_weakness_snapshots(limit=10)
+
+            self.assertTrue(snapshots)
+            latest = snapshots[0]
+            self.assertEqual(latest["question_type"], QuestionType.TRANSLATION.value)
+            self.assertEqual(latest["based_on_attempt_count"], 5)
+            self.assertIn("grammar", latest["dimensions_json"])
+            self.assertIn("翻译", latest["summary"])
 
 
 if __name__ == "__main__":
