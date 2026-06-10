@@ -1,0 +1,2 @@
+[console_scripts]
+yuejie-cet = app.main:main

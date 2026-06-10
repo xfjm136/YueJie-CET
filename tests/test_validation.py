@@ -1,0 +1,178 @@
+import unittest
+
+from app.ai.validators import CETQuestionValidator, QuestionSetValidationError
+from app.domain.enums import Level, QuestionType
+
+
+class ValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.validator = CETQuestionValidator()
+
+    def test_banked_cloze_payload_passes_validation(self) -> None:
+        payload = {
+            "title": "Study Habits",
+            "topic": "study",
+            "shared_options": [
+                "A. access",
+                "B. adapt",
+                "C. benefit",
+                "D. challenge",
+                "E. connect",
+                "F. efficient",
+                "G. flexible",
+                "H. maintain",
+                "I. pressure",
+                "J. routine",
+                "K. source",
+                "L. strategy",
+                "M. transform",
+                "N. value",
+                "O. virtual",
+            ],
+            "passage": {
+                "title": "Study Habits",
+                "paragraphs": [
+                    "Online learning became a more [1] part of student life in recent years. Many learners had to [2] with new tools quickly, but the shift also created a [3] when planning was weak. Teachers noticed that students often logged in on time yet still felt lost because they had not formed stable reading habits. In many classrooms, digital platforms gave learners more choices, but they also demanded greater self-control, clearer weekly goals, and more careful review of notes after class. Students who lacked these habits usually spent more time online without making much progress in understanding difficult materials.",
+                    "A useful [4] is to divide study time into short blocks. This makes work more [5] and reduces the [6] that comes from trying to finish everything at once. A regular [7] also helps students stay focused. Some learners prepare a list of small daily tasks, while others create a weekly reading calendar and check their progress every evening. The specific method may differ, but the general principle is the same: students need a predictable structure if they want to read carefully, remember details, and avoid the anxiety that comes from rushed preparation before an important test.",
+                    "Still, a good plan should remain [8]. Different tasks require different levels of [9], and students need to remember the long-term [10] of steady reading rather than last-minute effort. When a text contains abstract ideas, students should slow down, review key sentences, and connect new information with what they have learned before.",
+                ],
+            },
+            "questions": [
+                {"id": f"q{i}", "prompt": f"Blank {i}", "options": [], "skill_tag": "vocabulary", "hint": None}
+                for i in range(1, 11)
+            ],
+            "answer_key": ["O", "E", "D", "L", "F", "I", "J", "G", "A", "N"],
+            "analysis": {
+                "overall_strategy": "先判断逻辑和词性。",
+                "overall_summary": "考查语境词义和搭配。",
+                "item_explanations": [
+                    {
+                        "question_id": f"q{i}",
+                        "correct_answer": answer,
+                        "explanation": "结合上下文和词性可确定答案。",
+                        "skill_tag": "vocabulary",
+                    }
+                    for i, answer in enumerate(["O", "E", "D", "L", "F", "I", "J", "G", "A", "N"], start=1)
+                ],
+                "test_tips": ["先易后难", "先看词性", "注意上下文逻辑"],
+            },
+            "vocabulary": [
+                {"lemma": "virtual", "surface_form": "virtual", "level_hint": "cet4", "meaning_zh": "虚拟的", "example_en": ""},
+                {"lemma": "strategy", "surface_form": "strategy", "level_hint": "cet4", "meaning_zh": "策略", "example_en": ""},
+                {"lemma": "routine", "surface_form": "routine", "level_hint": "cet4", "meaning_zh": "惯例", "example_en": ""},
+            ],
+        }
+        validated = self.validator.validate(payload, Level.CET4, QuestionType.BANKED_CLOZE, None)
+        self.assertEqual(len(validated["questions"]), 10)
+        self.assertEqual(validated["answer_key"][0], "O")
+
+    def test_careful_reading_requires_exact_skill_distribution(self) -> None:
+        payload = {
+            "title": "Urban Noise",
+            "topic": "city life",
+            "shared_options": [],
+            "passage": {
+                "title": "Urban Noise",
+                "paragraphs": [
+                    "Many city residents have become so used to background noise that they rarely notice it until they visit a quieter place. Researchers say this constant exposure can affect concentration, sleep, and even emotional well-being. Although not every loud sound is harmful, the problem becomes serious when noise is frequent and unpredictable. Because city life is fast and crowded, people often accept the sounds of engines, construction work, and late-night social activity as an unavoidable part of daily experience.",
+                    "A recent study found that people working near construction sites made more mistakes on memory tasks than those in quieter offices. The researchers argue that the brain must spend energy filtering out irrelevant sound, leaving fewer mental resources for complex thinking. Over time, this can reduce productivity and increase fatigue. In addition, workers may not realize that their performance is declining, because the change is gradual rather than sudden.",
+                    "The effects are not limited to work. At home, noise from traffic or late-night activity may interrupt sleep cycles, even if sleepers do not fully wake up. Poor sleep can then influence mood, health, and decision-making the next day. This partly explains why some residents report stress even when they claim they have adapted to city life. Children and older adults may be especially sensitive, since they often have less control over their environment and fewer ways to avoid disturbance.",
+                    "Urban planners have started to respond by adding green spaces, improving building insulation, and limiting heavy traffic in residential areas. These changes cannot remove all noise, but they may reduce the most damaging kinds. Experts therefore suggest that noise should be treated as a public-health issue rather than a minor inconvenience. They also encourage residents to support practical measures, such as quieter public transport and better-designed housing, instead of assuming that noise is only a private problem.",
+                ],
+            },
+            "questions": [
+                {"id": "q1", "prompt": "What is the main idea of the passage?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "main_idea", "hint": None},
+                {"id": "q2", "prompt": "According to the study, why did workers perform worse?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
+                {"id": "q3", "prompt": "What can be inferred about sleep interruption?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
+                {"id": "q4", "prompt": "The word 'adapted' most nearly means", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "vocabulary_in_context", "hint": None},
+                {"id": "q5", "prompt": "What is the author's attitude toward urban-noise control?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "attitude", "hint": None},
+            ],
+            "answer_key": ["A", "B", "C", "D", "A"],
+            "analysis": {
+                "overall_strategy": "先看首段和各段主题句。",
+                "overall_summary": "文章讨论城市噪音的影响与治理。",
+                "item_explanations": [
+                    {"question_id": "q1", "correct_answer": "A", "explanation": "对应主旨。", "skill_tag": "main_idea"},
+                    {"question_id": "q2", "correct_answer": "B", "explanation": "对应细节。", "skill_tag": "detail"},
+                    {"question_id": "q3", "correct_answer": "C", "explanation": "对应推断。", "skill_tag": "inference"},
+                    {"question_id": "q4", "correct_answer": "D", "explanation": "对应词义。", "skill_tag": "vocabulary_in_context"},
+                    {"question_id": "q5", "correct_answer": "A", "explanation": "对应态度。", "skill_tag": "attitude"},
+                ],
+                "test_tips": ["关注主旨句", "回文定位", "结合上下文"],
+            },
+            "vocabulary": [
+                {"lemma": "concentration", "surface_form": "concentration", "level_hint": "cet4", "meaning_zh": "专注力", "example_en": ""},
+                {"lemma": "filter", "surface_form": "filtering", "level_hint": "cet4", "meaning_zh": "过滤", "example_en": ""},
+                {"lemma": "insulation", "surface_form": "insulation", "level_hint": "cet4", "meaning_zh": "隔音材料", "example_en": ""},
+            ],
+        }
+        validated = self.validator.validate(payload, Level.CET4, QuestionType.CAREFUL_READING, 1)
+        self.assertEqual(validated["questions"][3]["skill_tag"], "vocabulary_in_context")
+
+    def test_invalid_careful_reading_raises(self) -> None:
+        payload = {
+            "title": "Bad Payload",
+            "topic": "demo",
+            "shared_options": [],
+            "passage": {"title": "Bad", "paragraphs": ["Too short."]},
+            "questions": [{"id": "q1", "prompt": "bad", "options": ["A"], "skill_tag": "main_idea", "hint": None}],
+            "answer_key": ["E"],
+            "analysis": {
+                "overall_strategy": "",
+                "overall_summary": "",
+                "item_explanations": [],
+                "test_tips": [],
+            },
+            "vocabulary": [],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET4, QuestionType.CAREFUL_READING, 1)
+
+    def test_banked_cloze_rejects_duplicate_answer_letters(self) -> None:
+        payload = {
+            "title": "Study Habits",
+            "topic": "study",
+            "shared_options": [
+                "A. access", "B. adapt", "C. benefit", "D. challenge", "E. connect",
+                "F. efficient", "G. flexible", "H. maintain", "I. pressure", "J. routine",
+                "K. source", "L. strategy", "M. transform", "N. value", "O. virtual",
+            ],
+            "passage": {
+                "title": "Study Habits",
+                "paragraphs": [
+                    "Online learning became a more [1] part of student life in recent years. Many learners had to [2] with new tools quickly, but the shift also created a [3] when planning was weak. Teachers noticed that students often logged in on time yet still felt lost because they had not formed stable reading habits. In many classrooms, digital platforms gave learners more choices, but they also demanded greater self-control, clearer weekly goals, and more careful review of notes after class. Students who lacked these habits usually spent more time online without making much progress in understanding difficult materials.",
+                    "A useful [4] is to divide study time into short blocks. This makes work more [5] and reduces the [6] that comes from trying to finish everything at once. A regular [7] also helps students stay focused. Some learners prepare a list of small daily tasks, while others create a weekly reading calendar and check their progress every evening. The specific method may differ, but the general principle is the same: students need a predictable structure if they want to read carefully, remember details, and avoid the anxiety that comes from rushed preparation before an important test.",
+                    "Still, a good plan should remain [8]. Different tasks require different levels of [9], and students need to remember the long-term [10] of steady reading rather than last-minute effort. When a text contains abstract ideas, students should slow down, review key sentences, and connect new information with what they have learned before.",
+                ],
+            },
+            "questions": [
+                {"id": f"q{i}", "prompt": f"Blank {i}", "options": [], "skill_tag": "vocabulary", "hint": None}
+                for i in range(1, 11)
+            ],
+            "answer_key": ["O", "E", "D", "L", "F", "I", "J", "J", "A", "N"],
+            "analysis": {
+                "overall_strategy": "先判断逻辑和词性。",
+                "overall_summary": "考查语境词义和搭配。",
+                "item_explanations": [
+                    {
+                        "question_id": f"q{i}",
+                        "correct_answer": answer,
+                        "explanation": "结合上下文和词性可确定答案。",
+                        "skill_tag": "vocabulary",
+                    }
+                    for i, answer in enumerate(["O", "E", "D", "L", "F", "I", "J", "J", "A", "N"], start=1)
+                ],
+                "test_tips": ["先易后难", "先看词性", "注意上下文逻辑"],
+            },
+            "vocabulary": [
+                {"lemma": "virtual", "surface_form": "virtual", "level_hint": "cet4", "meaning_zh": "虚拟的", "example_en": ""},
+                {"lemma": "strategy", "surface_form": "strategy", "level_hint": "cet4", "meaning_zh": "策略", "example_en": ""},
+                {"lemma": "routine", "surface_form": "routine", "level_hint": "cet4", "meaning_zh": "惯例", "example_en": ""},
+            ],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET4, QuestionType.BANKED_CLOZE, None)
+
+
+if __name__ == "__main__":
+    unittest.main()

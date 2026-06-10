@@ -1,0 +1,53 @@
+Metadata-Version: 2.4
+Name: yuejie-cet
+Version: 0.1.0
+Summary: AI-powered CET reading trainer with a Textual TUI.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: textual<2.0,>=0.58
+Requires-Dist: httpx<1.0,>=0.27
+
+# 阅阶 CET
+
+基于 AI 的四六级阅读 TUI 刷题工具。
+
+当前首版技术路线：
+
+- Python 3.12+
+- Textual
+- SQLite
+- DeepSeek API
+
+## 功能范围
+
+- 四级 / 六级切换
+- 阅读 4 题型入口
+- TUI 多页面导航
+- 本地 SQLite 持久化
+- AI 出题接口层
+- 历史记录、词汇表、薄弱项基础闭环
+
+## 快速开始
+
+```bash
+cd /data/YueJie-CET
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cp .env.example .env
+yuejie-cet
+```
+
+默认模型使用 `deepseek-v4-pro`。如果没有配置 `DEEPSEEK_API_KEY`，程序会自动退回到内置示例题，方便先联调界面和流程。
+
+## 目录结构
+
+```text
+app/
+  ai/          DeepSeek 客户端、Prompt 和出题流水线
+  data/        SQLite 初始化与查询
+  domain/      枚举、数据模型、评分逻辑
+  services/    业务服务
+  ui/          Textual 应用
+tests/         基础单元测试
+```

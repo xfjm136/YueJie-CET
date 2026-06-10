@@ -1,0 +1,361 @@
+Screen {
+    layout: vertical;
+    align: center top;
+    color: #e5edf7;
+    background: #071018;
+}
+
+YueJieApp.theme-light Screen {
+    color: #1e293b;
+    background: #f2ede4;
+}
+
+YueJieApp.bg-transparent Screen {
+    background: #00000000;
+}
+
+Header {
+    background: #102030;
+    color: #eef6ff;
+}
+
+Footer {
+    background: #102030;
+    color: #eef6ff;
+}
+
+YueJieApp.theme-light Header,
+YueJieApp.theme-light Footer {
+    background: #e2d6c2;
+    color: #1e293b;
+}
+
+#home-root,
+.screen-shell {
+    width: 96%;
+    max-width: 146;
+    min-width: 72;
+    padding: 1 2;
+}
+
+.center-shell {
+    align: center top;
+}
+
+.small-shell {
+    max-width: 90;
+}
+
+.hero-title {
+    width: 100%;
+    content-align: center middle;
+    text-style: bold;
+    color: #f8c56c;
+    margin-bottom: 1;
+}
+
+.hero-subtitle {
+    width: 100%;
+    content-align: center middle;
+    color: #90a4bd;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .hero-title {
+    color: #7a3b1c;
+}
+
+YueJieApp.theme-light .hero-subtitle {
+    color: #5b6472;
+}
+
+.screen-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.screen-subtitle {
+    color: #92a0b3;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .screen-subtitle {
+    color: #5f6b77;
+}
+
+.panel {
+    border: round #506579;
+    background: #0f1927;
+    color: #e6eef8;
+    padding: 1 2;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .panel {
+    border: round #c3b59f;
+    background: #fffaf1;
+    color: #1f2933;
+}
+
+YueJieApp.theme-dark.bg-transparent .panel {
+    background: #0f1927bb;
+}
+
+YueJieApp.theme-light.bg-transparent .panel {
+    background: #fffaf1c9;
+}
+
+.thin-panel {
+    padding: 1 1;
+}
+
+.card-kicker,
+.paper-kicker {
+    color: #9db7d2;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .card-kicker,
+YueJieApp.theme-light .paper-kicker {
+    color: #8b4a22;
+}
+
+.strong-text {
+    text-style: bold;
+}
+
+.tiny-label {
+    color: #8ba0ba;
+}
+
+YueJieApp.theme-light .tiny-label {
+    color: #5b6773;
+}
+
+#home-top-cards,
+#home-chart-row,
+#type-card-row-1,
+#type-card-row-2,
+.center-row,
+.button-row {
+    width: 100%;
+    align: center middle;
+}
+
+.button-row {
+    height: auto;
+    margin-top: 1;
+}
+
+.button-row Button {
+    margin-right: 1;
+    margin-bottom: 1;
+}
+
+.big-button {
+    width: 24;
+}
+
+.metric-card,
+.type-card,
+.chart-card,
+.result-card {
+    width: 1fr;
+    min-width: 24;
+    margin-right: 1;
+}
+
+.result-card {
+    min-width: 18;
+}
+
+.metric-meta {
+    color: #9db0c6;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .metric-meta {
+    color: #5c6a77;
+}
+
+.metric-bar {
+    margin-top: 1;
+}
+
+.chart-spark {
+    height: 3;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+.settings-card {
+    height: auto;
+}
+
+Select {
+    margin-bottom: 1;
+}
+
+.practice-root {
+    width: 100%;
+    height: 1fr;
+    padding: 1;
+}
+
+#sidebar {
+    width: 26;
+    min-width: 26;
+    margin-right: 1;
+}
+
+.sidebar-shell {
+    height: 1fr;
+}
+
+.timer-digits {
+    width: 100%;
+    content-align: center middle;
+    color: #82f6bf;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .timer-digits {
+    color: #0f7255;
+}
+
+#passage-column {
+    width: 2fr;
+    margin-right: 1;
+}
+
+#question-column {
+    width: 1fr;
+}
+
+#right-scroll {
+    width: 1fr;
+}
+
+#two-column-right {
+    width: 1fr;
+}
+
+.paper-panel {
+    height: 1fr;
+}
+
+.paper-banner {
+    color: #f5c568;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .paper-banner {
+    color: #7b3f1d;
+}
+
+.paper-section-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.paper-instruction {
+    color: #95a8bd;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .paper-instruction {
+    color: #65727f;
+}
+
+.paper-article-title {
+    width: 100%;
+    content-align: center middle;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.paper-body {
+    padding: 1 1;
+}
+
+.paper-question {
+    margin-bottom: 1;
+}
+
+.paper-card {
+    border: round #4f667a;
+    background: #111d2d;
+    padding: 1;
+    margin-bottom: 1;
+}
+
+YueJieApp.theme-light .paper-card {
+    border: round #d5c6ae;
+    background: #fffdf7;
+}
+
+.answer-input {
+    margin-top: 1;
+}
+
+.blank-grid,
+.option-row {
+    width: 100%;
+    align: center middle;
+    height: auto;
+    margin-bottom: 1;
+}
+
+.blank-chip {
+    width: 10;
+    margin-right: 1;
+}
+
+.option-chip {
+    width: 1fr;
+    min-width: 12;
+    margin-right: 1;
+}
+
+.blank-active {
+    background: #cf6a2a;
+    color: #fff8ef;
+}
+
+.blank-filled {
+    border: heavy #6cc6a6;
+}
+
+.option-used {
+    background: #25374d;
+    color: #89aac7;
+}
+
+.option-current {
+    border: heavy #6cc6a6;
+}
+
+YueJieApp.theme-light .blank-active {
+    background: #7b3f1d;
+    color: #fff8ef;
+}
+
+YueJieApp.theme-light .blank-filled {
+    border: heavy #0d7354;
+}
+
+YueJieApp.theme-light .option-used {
+    background: #e5dccb;
+    color: #576372;
+}
+
+YueJieApp.theme-light .option-current {
+    border: heavy #0d7354;
+}
+
+.hidden {
+    display: none;
+}
