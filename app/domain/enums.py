@@ -12,6 +12,8 @@ class QuestionType(str, Enum):
     BANKED_CLOZE = "banked_cloze"
     LONG_READING = "long_reading"
     CAREFUL_READING = "careful_reading"
+    WRITING = "writing"
+    TRANSLATION = "translation"
 
 
 class ThemeMode(str, Enum):

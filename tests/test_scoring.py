@@ -40,6 +40,34 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(result.accuracy, 0.5)
         self.assertEqual(len(result.question_results), 2)
 
+    def test_subjective_types_require_ai_evaluation_pipeline(self) -> None:
+        question_set = QuestionSet(
+            id="qs_writing",
+            level=Level.CET4,
+            question_type=QuestionType.WRITING,
+            title="Writing Task",
+            topic="writing",
+            passage=Passage(title="Task", paragraphs=["Task line one."]),
+            questions=[],
+            answer_key=[],
+            analysis=AnalysisReport(
+                overall_strategy="demo",
+                overall_summary="demo",
+                item_explanations=[],
+                test_tips=[],
+            ),
+            vocabulary=[],
+            task_prompt="Write an essay.",
+            reference_answer="A sample essay.",
+            rubric_focus=["content_relevance", "grammar"],
+            min_response_words=120,
+            max_response_words=200,
+        )
+        self.assertEqual(question_set.layout_mode, "two")
+        self.assertTrue(question_set.is_subjective)
+        with self.assertRaises(ValueError):
+            grade_attempt(question_set, {"response_text": "demo"}, 600)
+
 
 if __name__ == "__main__":
     unittest.main()

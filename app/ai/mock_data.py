@@ -25,6 +25,10 @@ class MockQuestionFactory:
             return cls._banked_cloze(level, model_name)
         if question_type is QuestionType.LONG_READING:
             return cls._long_reading(level, model_name)
+        if question_type is QuestionType.WRITING:
+            return cls._writing(level, model_name)
+        if question_type is QuestionType.TRANSLATION:
+            return cls._translation(level, model_name)
         return cls._careful_reading(level, slot or 1, model_name)
 
     @staticmethod
@@ -330,3 +334,104 @@ class MockQuestionFactory:
             source_type="mock",
         )
 
+    @staticmethod
+    def _writing(level: Level, model_name: str) -> QuestionSet:
+        min_words = 120 if level is Level.CET4 else 150
+        prompt_lines = (
+            [
+                "Suppose your university is organizing a campus reading campaign.",
+                "Write an essay to explain why regular reading still matters in the digital age.",
+                "You may include personal observation, examples, and practical suggestions.",
+            ]
+            if level is Level.CET4
+            else [
+                "Suppose your university newspaper is collecting essays on technology and human learning.",
+                "Write an essay discussing how AI tools can support but not replace independent thinking.",
+                "You may refer to study habits, classroom practice, and long-term development.",
+            ]
+        )
+        reference = (
+            "Artificial intelligence has become part of daily learning, but students still need independent thinking to judge information, organize ideas, and make responsible decisions. AI tools may save time, offer examples, and reduce routine pressure, yet they cannot replace the habit of asking clear questions or the effort of building one’s own argument. In real study situations, students improve most when they use technology as support rather than as a substitute. For example, an AI summary may help a student review an article quickly, but deep understanding still depends on careful reading, note-taking, and personal reflection. If learners accept every generated answer without checking logic or evidence, they may become faster but weaker. Universities should therefore encourage balanced use of technology. Students need guidance on when AI can improve efficiency and when they must slow down to think for themselves. In this way, technology becomes a helpful partner, while independent thinking remains the true core of learning."
+        )
+        return QuestionSet(
+            id=make_id("qs"),
+            level=level,
+            question_type=QuestionType.WRITING,
+            title="Writing Task",
+            topic="writing practice",
+            passage=Passage(title="Task Notes", paragraphs=prompt_lines),
+            questions=[],
+            answer_key=[],
+            analysis=AnalysisReport(
+                overall_strategy="先确认立意，再组织段落结构，最后重点检查句法和连接。",
+                overall_summary="写作任务强调切题、结构、语言准确性和表达完整度。",
+                item_explanations=[],
+                test_tips=[
+                    "先列出两到三个主点，再展开例子。",
+                    "注意段落之间的连接与逻辑推进。",
+                    "预留时间检查拼写、时态和主谓一致。",
+                ],
+            ),
+            vocabulary=[
+                VocabularyItem("independent", "independent", level.value, "独立的"),
+                VocabularyItem("reflection", "reflection", level.value, "反思"),
+                VocabularyItem("substitute", "substitute", level.value, "替代品"),
+            ],
+            task_prompt=(
+                f"For this part, you are allowed 30 minutes to write an essay of no less than {min_words} words "
+                "according to the task given below."
+            ),
+            reference_answer=reference,
+            rubric_focus=["content_relevance", "coherence", "grammar", "lexical_accuracy"],
+            min_response_words=min_words,
+            max_response_words=min_words + 80,
+            word_count=len(reference.split()),
+            generator_model=model_name,
+            source_type="mock",
+        )
+
+    @staticmethod
+    def _translation(level: Level, model_name: str) -> QuestionSet:
+        source_text = (
+            "中国许多城市近年积极推动公共图书馆建设。除了提供借阅服务，这些图书馆还经常举办讲座、读书会和亲子活动。它们不仅丰富了市民的文化生活，也为社区交流提供了更加开放和舒适的公共空间。"
+            if level is Level.CET4
+            else "近年来，越来越多的中国城市开始重视历史街区的保护与更新。有关部门不仅修复老建筑，还努力改善居民生活条件，并通过文化活动吸引年轻人重新关注传统社区。这种做法有助于在现代化进程中保留城市记忆，也为地方经济带来了新的活力。"
+        )
+        reference = (
+            "In recent years, many Chinese cities have actively promoted the development of public libraries. In addition to lending services, these libraries often organize lectures, reading clubs, and family activities. They have not only enriched the cultural life of residents but also provided a more open and comfortable public space for community interaction."
+            if level is Level.CET4
+            else "In recent years, more and more Chinese cities have begun to attach importance to the protection and renewal of historic neighborhoods. The relevant authorities have not only restored old buildings but also worked to improve residents’ living conditions and attract young people back to traditional communities through cultural activities. This approach helps preserve urban memory in the course of modernization and brings new vitality to local economies."
+        )
+        return QuestionSet(
+            id=make_id("qs"),
+            level=level,
+            question_type=QuestionType.TRANSLATION,
+            title="Translation Task",
+            topic="translation practice",
+            passage=Passage(title="汉译英原文", paragraphs=[source_text]),
+            questions=[],
+            answer_key=[],
+            analysis=AnalysisReport(
+                overall_strategy="先划分信息单位，再确定主干结构，最后优化英语表达的自然度。",
+                overall_summary="翻译任务强调信息准确、表达通顺、语法稳定和词汇得体。",
+                item_explanations=[],
+                test_tips=[
+                    "先保证事实和逻辑关系不丢失。",
+                    "避免逐字硬译，优先还原自然英语句式。",
+                    "检查时态、冠词、单复数和搭配。",
+                ],
+            ),
+            vocabulary=[
+                VocabularyItem("community", "community", level.value, "社区"),
+                VocabularyItem("cultural", "cultural", level.value, "文化的"),
+                VocabularyItem("vitality", "vitality", level.value, "活力"),
+            ],
+            task_prompt="For this part, you are allowed 30 minutes to translate the following Chinese passage into English.",
+            reference_answer=reference,
+            rubric_focus=["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"],
+            min_response_words=90 if level is Level.CET4 else 120,
+            max_response_words=180 if level is Level.CET4 else 220,
+            word_count=len(source_text),
+            generator_model=model_name,
+            source_type="mock",
+        )

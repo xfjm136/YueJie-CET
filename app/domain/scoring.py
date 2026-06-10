@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 
 from app.constants import SKILL_ADVICE, SKILL_LABELS
+from app.domain.enums import QuestionType
 from app.domain.schemas import (
     AttemptQuestionResult,
     AttemptResult,
@@ -16,6 +17,9 @@ def grade_attempt(
     answers: dict[str, str],
     duration_seconds: int,
 ) -> AttemptResult:
+    if question_set.question_type in {QuestionType.WRITING, QuestionType.TRANSLATION}:
+        raise ValueError("subjective tasks must be graded by the AI evaluation pipeline")
+
     explanation_map = {
         item.question_id: item for item in question_set.analysis.item_explanations
     }
@@ -74,4 +78,3 @@ def grade_attempt(
         recommendations=recommendations,
         question_results=results,
     )
-

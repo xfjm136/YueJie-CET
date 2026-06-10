@@ -139,6 +139,102 @@ class VocabularyItem:
 
 
 @dataclass
+class ScoreDimension:
+    name: str
+    score: float
+    max_score: float
+    feedback_zh: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ScoreDimension":
+        return cls(
+            name=data["name"],
+            score=float(data.get("score", 0.0)),
+            max_score=float(data.get("max_score", 0.0)),
+            feedback_zh=data.get("feedback_zh", ""),
+        )
+
+
+@dataclass
+class WordCorrection:
+    original: str
+    corrected: str
+    reason_zh: str
+    skill_tag: str = "lexical_accuracy"
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WordCorrection":
+        return cls(
+            original=data["original"],
+            corrected=data["corrected"],
+            reason_zh=data.get("reason_zh", ""),
+            skill_tag=data.get("skill_tag", "lexical_accuracy"),
+        )
+
+
+@dataclass
+class SentenceRewrite:
+    original_sentence: str
+    revised_sentence: str
+    reason_zh: str
+    skill_tag: str = "grammar"
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SentenceRewrite":
+        return cls(
+            original_sentence=data["original_sentence"],
+            revised_sentence=data["revised_sentence"],
+            reason_zh=data.get("reason_zh", ""),
+            skill_tag=data.get("skill_tag", "grammar"),
+        )
+
+
+@dataclass
+class SubjectiveEvaluation:
+    score_15: float
+    estimated_reported_score: float
+    grade_band: str
+    overall_feedback_zh: str
+    score_dimensions: list[ScoreDimension] = field(default_factory=list)
+    wrong_words: list[WordCorrection] = field(default_factory=list)
+    sentence_rewrites: list[SentenceRewrite] = field(default_factory=list)
+    high_score_version: str = ""
+    weakness_tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SubjectiveEvaluation":
+        return cls(
+            score_15=float(data.get("score_15", 0.0)),
+            estimated_reported_score=float(data.get("estimated_reported_score", 0.0)),
+            grade_band=data.get("grade_band", ""),
+            overall_feedback_zh=data.get("overall_feedback_zh", ""),
+            score_dimensions=[
+                ScoreDimension.from_dict(item) for item in data.get("score_dimensions", [])
+            ],
+            wrong_words=[
+                WordCorrection.from_dict(item) for item in data.get("wrong_words", [])
+            ],
+            sentence_rewrites=[
+                SentenceRewrite.from_dict(item) for item in data.get("sentence_rewrites", [])
+            ],
+            high_score_version=data.get("high_score_version", ""),
+            weakness_tags=list(data.get("weakness_tags", [])),
+        )
+
+
+@dataclass
 class QuestionSet:
     id: str
     level: Level
@@ -151,6 +247,11 @@ class QuestionSet:
     analysis: AnalysisReport
     vocabulary: list[VocabularyItem]
     shared_options: list[str] = field(default_factory=list)
+    task_prompt: str = ""
+    reference_answer: str = ""
+    rubric_focus: list[str] = field(default_factory=list)
+    min_response_words: int = 0
+    max_response_words: int = 0
     slot: int | None = None
     word_count: int = 0
     created_at: datetime = field(default_factory=utc_now)
@@ -159,7 +260,20 @@ class QuestionSet:
 
     @property
     def layout_mode(self) -> str:
-        return "two" if self.question_type is QuestionType.LONG_READING else "three"
+        return (
+            "two"
+            if self.question_type
+            in {
+                QuestionType.LONG_READING,
+                QuestionType.WRITING,
+                QuestionType.TRANSLATION,
+            }
+            else "three"
+        )
+
+    @property
+    def is_subjective(self) -> bool:
+        return self.question_type in {QuestionType.WRITING, QuestionType.TRANSLATION}
 
     def to_dict(self) -> dict[str, Any]:
         return _plain(self)
@@ -178,6 +292,11 @@ class QuestionSet:
             analysis=AnalysisReport.from_dict(data["analysis"]),
             vocabulary=[VocabularyItem.from_dict(item) for item in data.get("vocabulary", [])],
             shared_options=list(data.get("shared_options", [])),
+            task_prompt=data.get("task_prompt", ""),
+            reference_answer=data.get("reference_answer", ""),
+            rubric_focus=list(data.get("rubric_focus", [])),
+            min_response_words=int(data.get("min_response_words", 0)),
+            max_response_words=int(data.get("max_response_words", 0)),
             slot=data.get("slot"),
             word_count=int(data.get("word_count", 0)),
             created_at=datetime.fromisoformat(data["created_at"])
@@ -223,6 +342,7 @@ class AttemptResult:
     summary: str
     recommendations: list[str]
     question_results: list[AttemptQuestionResult]
+    subjective_evaluation: SubjectiveEvaluation | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -243,8 +363,12 @@ class AttemptResult:
                 AttemptQuestionResult.from_dict(item)
                 for item in data.get("question_results", [])
             ],
+            subjective_evaluation=(
+                SubjectiveEvaluation.from_dict(data["subjective_evaluation"])
+                if data.get("subjective_evaluation")
+                else None
+            ),
             created_at=datetime.fromisoformat(data["created_at"])
             if data.get("created_at")
             else utc_now(),
         )
-

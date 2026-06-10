@@ -20,6 +20,8 @@ QUESTION_TYPE_LABELS = {
     QuestionType.BANKED_CLOZE: "选词填空",
     QuestionType.LONG_READING: "长篇阅读",
     QuestionType.CAREFUL_READING: "仔细阅读",
+    QuestionType.WRITING: "写作",
+    QuestionType.TRANSLATION: "翻译",
 }
 
 THEME_LABELS = {
@@ -45,6 +47,8 @@ QUESTION_TYPE_SHORT_LABELS = {
     "careful_reading": "仔细",
     "careful_reading:1": "仔细 1",
     "careful_reading:2": "仔细 2",
+    "writing": "写作",
+    "translation": "翻译",
 }
 
 SKILL_LABELS = {
@@ -57,6 +61,12 @@ SKILL_LABELS = {
     "matching": "段落匹配",
     "speed": "作答速度",
     "logic": "上下文逻辑",
+    "grammar": "语法表达",
+    "lexical_accuracy": "词汇准确",
+    "coherence": "篇章连贯",
+    "content_relevance": "内容切题",
+    "translation_accuracy": "翻译准确",
+    "translation_fluency": "译文流畅",
     "general": "综合理解",
 }
 
@@ -64,6 +74,8 @@ QUESTION_TIME_HINTS = {
     QuestionType.BANKED_CLOZE: 8 * 60,
     QuestionType.LONG_READING: 15 * 60,
     QuestionType.CAREFUL_READING: 12 * 60,
+    QuestionType.WRITING: 30 * 60,
+    QuestionType.TRANSLATION: 30 * 60,
 }
 
 SKILL_ADVICE = {
@@ -75,5 +87,11 @@ SKILL_ADVICE = {
     "matching": "先扫题干关键词，再快速回文定位段落。",
     "speed": "先易后难，卡住一题时先跳过，保证整体节奏。",
     "logic": "多看因果、转折、并列等连接关系。",
+    "grammar": "重点检查主谓一致、时态、从句和句子完整性。",
+    "lexical_accuracy": "优先替换拼写错误和搭配不当的高频词。",
+    "coherence": "用清晰连接词组织段落，避免句子之间跳跃。",
+    "content_relevance": "先对照题目要求，确保信息点覆盖完整且不跑题。",
+    "translation_accuracy": "先保证关键信息和逻辑关系准确，再优化表达。",
+    "translation_fluency": "避免逐字硬译，优先生成自然、完整的英语句子。",
     "general": "先明确题目考点，再回原文核对依据。",
 }
