@@ -967,11 +967,15 @@ impl YueJieRustApp {
     fn new() -> Result<Self> {
         let backend = BackendBridge::new()?;
         let overview = backend.overview()?;
+        let mut settings = overview.settings.clone();
+        if force_light_mode_opaque(&mut settings) {
+            backend.set_setting("background_mode", &settings.background_mode)?;
+        }
         Ok(Self {
             backend,
             screen: Screen::Home,
             overview: overview.overview,
-            settings: overview.settings,
+            settings,
             selected_level: LevelChoice::Cet4,
             selected_type: TypeChoice::BankedCloze,
             home_menu_index: 0,
@@ -1781,6 +1785,10 @@ impl YueJieRustApp {
 
     fn open_settings(&mut self) -> Result<()> {
         self.settings = self.backend.settings()?.settings;
+        if force_light_mode_opaque(&mut self.settings) {
+            self.backend
+                .set_setting("background_mode", &self.settings.background_mode)?;
+        }
         self.settings_focus = 0;
         self.screen = Screen::Settings;
         self.status_line = String::from("上下切换项目，左右或回车切换主题、背景与配色。");
@@ -1791,6 +1799,10 @@ impl YueJieRustApp {
         let response = self.backend.overview()?;
         self.overview = response.overview;
         self.settings = response.settings;
+        if force_light_mode_opaque(&mut self.settings) {
+            self.backend
+                .set_setting("background_mode", &self.settings.background_mode)?;
+        }
         Ok(())
     }
 
@@ -4736,6 +4748,15 @@ fn interactive_border_style(palette: Palette, selected: bool) -> Style {
     }
 }
 
+fn force_light_mode_opaque(settings: &mut BridgeSettings) -> bool {
+    if settings.theme_mode == "light" && settings.background_mode != "opaque" {
+        settings.background_mode = "opaque".to_string();
+        true
+    } else {
+        false
+    }
+}
+
 fn palette_mode_label(mode: &str) -> &'static str {
     match mode {
         "ink" => "墨青蓝",
@@ -5055,7 +5076,7 @@ fn timer_glyphs() -> HashMap<char, [&'static str; 5]> {
         ('1', [" ╷ ", " │ ", " │ ", " │ ", " ╵ "]),
         ('2', ["╭─╮", "  │", "╭─╯", "│  ", "╰─╯"]),
         ('3', ["╭─╮", "  │", " ─┤", "  │", "╰─╯"]),
-        ('4', ["   ", "│ │", "├─┤", "  │", "  ╵"]),
+        ('4', ["│ │", "│ │", "├─┤", "  │", "  │"]),
         ('5', ["╭─╮", "│  ", "╰─╮", "  │", "╰─╯"]),
         ('6', ["╭─╮", "│  ", "├─╮", "│ │", "╰─╯"]),
         ('7', ["╶─╮", "  │", "  │", "  │", "  ╵"]),
