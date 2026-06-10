@@ -61,7 +61,7 @@ class ScoringTests(unittest.TestCase):
             reference_answer="A sample essay.",
             rubric_focus=["content_relevance", "grammar"],
             min_response_words=120,
-            max_response_words=200,
+            max_response_words=180,
         )
         self.assertEqual(question_set.layout_mode, "two")
         self.assertTrue(question_set.is_subjective)

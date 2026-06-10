@@ -25,8 +25,8 @@ class CETQuestionValidator:
         Level.CET6: (1050, 1350),
     }
     CAREFUL_READING_RANGES = {
-        Level.CET4: (290, 360),
-        Level.CET6: (390, 470),
+        Level.CET4: (300, 350),
+        Level.CET6: (400, 450),
     }
     CAREFUL_READING_SKILLS = {
         "main_idea",
@@ -38,6 +38,10 @@ class CETQuestionValidator:
     WRITING_MIN_WORDS = {
         Level.CET4: 120,
         Level.CET6: 150,
+    }
+    WRITING_MAX_WORDS = {
+        Level.CET4: 180,
+        Level.CET6: 200,
     }
     TRANSLATION_CHAR_RANGES = {
         Level.CET4: (140, 160),
@@ -361,10 +365,24 @@ class CETQuestionValidator:
         if len(questions) != 5:
             errors.append("仔细阅读必须提供 5 道单选题")
         skill_tags = [question.get("skill_tag", "") for question in questions]
-        if set(skill_tags) != self.CAREFUL_READING_SKILLS or len(set(skill_tags)) != 5:
+        if any(tag not in self.CAREFUL_READING_SKILLS for tag in skill_tags):
             errors.append(
-                "仔细阅读 5 题 skill_tag 必须恰好覆盖 main_idea/detail/inference/vocabulary_in_context/attitude 各一次"
+                "仔细阅读 skill_tag 只能使用 main_idea/detail/inference/vocabulary_in_context/attitude"
             )
+        if skill_tags.count("detail") < 1:
+            errors.append("仔细阅读至少应包含 1 道细节定位题")
+        if sum(tag in {"main_idea", "inference", "attitude"} for tag in skill_tags) < 1:
+            errors.append("仔细阅读至少应包含 1 道主旨/推断/态度类题目")
+        if skill_tags.count("vocabulary_in_context") > 1:
+            errors.append("仔细阅读语境词义题通常不应超过 1 道")
+        if skill_tags.count("attitude") > 1:
+            errors.append("仔细阅读作者态度题通常不应超过 1 道")
+        if slot == 1 and sum(tag in {"detail", "vocabulary_in_context"} for tag in skill_tags) < 2:
+            errors.append("仔细阅读 1 应更偏事实检索、结果对应或语境释义，至少包含 2 道相关题")
+        if slot == 1 and sum(tag in {"inference", "vocabulary_in_context"} for tag in skill_tags) < 1:
+            errors.append("仔细阅读 1 至少应包含 1 道结果推断或术语/词义理解题")
+        if slot == 2 and sum(tag in {"inference", "attitude", "main_idea"} for tag in skill_tags) < 2:
+            errors.append("仔细阅读 2 应更偏推断、例证目的或态度主旨，至少包含 2 道相关题")
         for index, question in enumerate(questions, start=1):
             if len(question.get("options", [])) != 4:
                 errors.append(f"仔细阅读第 {index} 题必须提供 4 个选项")
@@ -383,8 +401,8 @@ class CETQuestionValidator:
                 or "closest in meaning" in prompt
                 or "refers to" in prompt
             )
-            if not vocab_like and not prompt.endswith("?"):
-                errors.append(f"仔细阅读第 {index} 题题干应为标准英文问句")
+            if len(prompt.split()) < 4 and not vocab_like:
+                errors.append(f"仔细阅读第 {index} 题题干过短，不像正式真题问法")
         if len(payload["answer_key"]) != 5:
             errors.append("仔细阅读 answer_key 必须有 5 项")
         for answer in payload["answer_key"]:
@@ -410,12 +428,17 @@ class CETQuestionValidator:
         if len(payload["passage"]["paragraphs"]) < 2:
             errors.append("写作题题面说明至少应包含 2 行英文提示")
         min_words = self.WRITING_MIN_WORDS[level]
+        max_words = self.WRITING_MAX_WORDS[level]
         if payload.get("min_response_words", 0) < min_words:
             errors.append(f"写作题 min_response_words 不应低于 {min_words}")
+        if payload.get("max_response_words", 0) > max_words:
+            errors.append(f"写作题 max_response_words 不应高于 {max_words}")
         reference_word_count = self._word_count([payload.get("reference_answer", "")])
         payload["word_count"] = reference_word_count
-        if reference_word_count < min_words:
-            errors.append(f"写作题参考范文词数不应低于 {min_words}，当前为 {reference_word_count}")
+        if not min_words <= reference_word_count <= max_words:
+            errors.append(
+                f"写作题参考范文词数应在 {min_words}-{max_words} 之间，当前为 {reference_word_count}"
+            )
         if len(payload.get("rubric_focus", [])) < 4:
             errors.append("写作题 rubric_focus 至少应包含 4 个评分维度")
 

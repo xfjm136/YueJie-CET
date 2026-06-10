@@ -5603,7 +5603,7 @@ fn format_directions(question_type: &str) -> &'static str {
             "Directions: In this section, you will read a long passage with paragraphs labeled A to K. Match each statement with the paragraph from which the information is derived."
         }
         "careful_reading" => {
-            "Directions: Read the passage carefully and choose the best answer to each question according to the information given in the passage."
+            "Directions: Read the passage carefully and choose the best answer to each question or unfinished statement according to the information given in the passage."
         }
         "translation" => {
             "Directions: For this part, you are allowed 30 minutes to translate the following Chinese passage into English."

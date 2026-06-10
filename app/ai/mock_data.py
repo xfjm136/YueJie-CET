@@ -189,144 +189,199 @@ class MockQuestionFactory:
 
     @staticmethod
     def _careful_reading(level: Level, slot: int, model_name: str) -> QuestionSet:
-        questions = [
-            Question(
-                id=f"q{i}",
-                prompt=prompt,
-                options=options,
-                skill_tag=skill,
-            )
-            for i, (prompt, options, skill) in enumerate(
-                [
-                    (
-                        "What is the main purpose of the passage?",
-                        [
-                            "A. To compare several mobile apps.",
-                            "B. To explain why deep reading still matters.",
-                            "C. To criticize all forms of digital reading.",
-                            "D. To introduce a new college major.",
-                        ],
-                        "main_idea",
-                    ),
-                    (
-                        "According to the passage, why do many students reread lines?",
-                        [
-                            "A. They forget paragraph labels.",
-                            "B. They dislike long articles.",
-                            "C. They do not read with a clear goal.",
-                            "D. They refuse to take notes.",
-                        ],
-                        "detail",
-                    ),
-                    (
-                        "What can be inferred about timed practice?",
-                        [
-                            "A. It is only useful for advanced learners.",
-                            "B. It should be combined with reflection.",
-                            "C. It usually damages comprehension.",
-                            "D. It works without any strategy training.",
-                        ],
-                        "inference",
-                    ),
-                    (
-                        "The word 'deliberate' is closest in meaning to ______.",
-                        [
-                            "A. careless",
-                            "B. slow but purposeful",
-                            "C. public",
-                            "D. repeated by others",
-                        ],
-                        "vocabulary",
-                    ),
-                    (
-                        "What is the author's attitude toward reading strategy?",
-                        [
-                            "A. Doubtful.",
-                            "B. Strongly negative.",
-                            "C. Supportive but practical.",
-                            "D. Completely uninterested.",
-                        ],
-                        "attitude",
-                    ),
+        if slot == 1:
+            questions = [
+                Question(
+                    id="q1",
+                    prompt="Why did the researchers include two sleep groups in the experiment?",
+                    options=[
+                        "A. To compare different memory outcomes.",
+                        "B. To reduce the cost of the project.",
+                        "C. To shorten the testing schedule.",
+                        "D. To replace the written survey.",
+                    ],
+                    skill_tag="detail",
+                ),
+                Question(
+                    id="q2",
+                    prompt="What did the study find about students who slept less?",
+                    options=[
+                        "A. They finished faster but remembered more.",
+                        "B. They showed weaker recall the next day.",
+                        "C. They refused to join the second test.",
+                        "D. They improved after drinking coffee.",
+                    ],
+                    skill_tag="detail",
+                ),
+                Question(
+                    id="q3",
+                    prompt="The phrase \"memory consolidation\" most nearly means ______.",
+                    options=[
+                        "A. organizing and strengthening memories",
+                        "B. discussing personal experiences",
+                        "C. delaying a medical treatment",
+                        "D. changing experimental equipment",
+                    ],
+                    skill_tag="vocabulary_in_context",
+                ),
+                Question(
+                    id="q4",
+                    prompt="What was the main purpose of the experiment?",
+                    options=[
+                        "A. To prove that all students need exactly eight hours of sleep.",
+                        "B. To see how sleep length influenced memory performance.",
+                        "C. To compare online and offline learning habits.",
+                        "D. To test whether students liked laboratory settings.",
+                    ],
+                    skill_tag="main_idea",
+                ),
+                Question(
+                    id="q5",
+                    prompt="What can be inferred about sleep and learning from the passage?",
+                    options=[
+                        "A. Short sleep affects recall more than students expect.",
+                        "B. Sleep only matters in science classes.",
+                        "C. Memory declines can be solved by working longer hours.",
+                        "D. Students perform best when tested immediately.",
+                    ],
+                    skill_tag="inference",
+                ),
+            ]
+            answer_key = ["A", "B", "A", "B", "A"]
+            explanations = [
+                ItemExplanation("q1", "A", "分组是为了比较睡眠长短对记忆表现的影响。", "detail"),
+                ItemExplanation("q2", "B", "实验结果指出睡眠更少的学生次日回忆更弱。", "detail"),
+                ItemExplanation("q3", "A", "memory consolidation 指记忆被加工和巩固。", "vocabulary_in_context"),
+                ItemExplanation("q4", "B", "全文核心是考察睡眠时长如何影响记忆表现。", "main_idea"),
+                ItemExplanation("q5", "A", "作者暗示睡眠不足对学习效果的伤害常被低估。", "inference"),
+            ]
+            passage = Passage(
+                title="How Sleep Shapes Memory",
+                paragraphs=[
+                    "A university research team recently examined how different sleep schedules affected students' memory. The researchers divided volunteers into two groups. One group slept for about eight hours, while the other slept for only five hours before completing the same recall tasks the next morning.",
+                    "The goal was not simply to measure tiredness. Instead, the team wanted to know whether memory consolidation would suffer when students had less time for deep sleep. Both groups studied a list of unfamiliar facts in the evening and then returned for testing the next day.",
+                    "The results showed a clear difference. Students who slept less could still recognize some of the information, but they performed worse on tasks that required them to recall details without help. The researchers therefore argued that sleep should be treated as part of the learning process rather than as time lost from study.",
                 ],
-                start=1,
             )
-        ]
-        answer_key = ["B", "C", "B", "B", "C"]
-        explanations = [
-            ItemExplanation(
-                question_id="q1",
-                correct_answer="B",
-                explanation="全文围绕“深度阅读为何仍然重要以及如何训练”展开。",
-                skill_tag="main_idea",
-            ),
-            ItemExplanation(
-                question_id="q2",
-                correct_answer="C",
-                explanation="文中指出没有明确任务目标时，学生容易反复重读却仍抓不住重点。",
-                skill_tag="detail",
-            ),
-            ItemExplanation(
-                question_id="q3",
-                correct_answer="B",
-                explanation="作者强调计时练习有效，但必须和复盘、策略一起使用。",
-                skill_tag="inference",
-            ),
-            ItemExplanation(
-                question_id="q4",
-                correct_answer="B",
-                explanation="deliberate 在文中表示有意识、有目的地慢下来处理关键信息。",
-                skill_tag="vocabulary",
-            ),
-            ItemExplanation(
-                question_id="q5",
-                correct_answer="C",
-                explanation="作者认可策略训练，但也反复提醒要结合实际速度和训练量。",
-                skill_tag="attitude",
-            ),
-        ]
-        passage = Passage(
-            title="Why Deep Reading Still Matters",
-            paragraphs=[
-                (
-                    "Students today read on screens more often than previous generations did, yet many teachers notice "
-                    "that reading more does not always mean reading well. Learners may move quickly through pages without "
-                    "deciding what information deserves attention."
+            topic = "sleep research and memory"
+        else:
+            questions = [
+                Question(
+                    id="q1",
+                    prompt="What can be inferred about young shoppers from Paragraph 2?",
+                    options=[
+                        "A. They reject all forms of online shopping.",
+                        "B. They often connect second-hand shopping with personal values.",
+                        "C. They care more about speed than price.",
+                        "D. They prefer large chain stores in every situation.",
+                    ],
+                    skill_tag="inference",
                 ),
-                (
-                    "As a result, they often reread lines that they already saw because they never formed a clear goal in "
-                    "the first place. Effective readers, by contrast, adjust their speed. They skim for structure and then "
-                    "slow down deliberately when a paragraph contains an argument, an example, or a turning point."
+                Question(
+                    id="q2",
+                    prompt="Why does the author mention social media videos in the passage?",
+                    options=[
+                        "A. To show how quickly shopping advice can spread.",
+                        "B. To prove that fashion is becoming less expensive.",
+                        "C. To explain why physical stores are disappearing.",
+                        "D. To criticize students for copying one another.",
+                    ],
+                    skill_tag="inference",
                 ),
-                (
-                    "Timed practice remains useful, but only when it is followed by reflection. Students need to ask why an "
-                    "option was correct, what clues they missed, and how they might locate the same information faster next time."
+                Question(
+                    id="q3",
+                    prompt="What is the main idea of the passage?",
+                    options=[
+                        "A. Young consumers are abandoning fashion trends.",
+                        "B. Traditional retailers should stop using digital marketing.",
+                        "C. The rise of second-hand shopping reflects both practical and social motives.",
+                        "D. Buying used goods is only a temporary campus fashion.",
+                    ],
+                    skill_tag="main_idea",
                 ),
-            ],
-        )
+                Question(
+                    id="q4",
+                    prompt="What is the author's attitude toward second-hand shopping among young people?",
+                    options=[
+                        "A. Entirely doubtful.",
+                        "B. Mildly supportive.",
+                        "C. Openly annoyed.",
+                        "D. Completely indifferent.",
+                    ],
+                    skill_tag="attitude",
+                ),
+                Question(
+                    id="q5",
+                    prompt="What contributes to the popularity of second-hand stores among students?",
+                    options=[
+                        "A. They offer a mix of savings, uniqueness, and social meaning.",
+                        "B. They are required by most universities.",
+                        "C. They provide better online delivery than major brands.",
+                        "D. They only sell products made for young consumers.",
+                    ],
+                    skill_tag="detail",
+                ),
+            ]
+            answer_key = ["B", "A", "C", "B", "A"]
+            explanations = [
+                ItemExplanation("q1", "B", "文中暗示许多年轻人把二手购物与环保、自我表达联系起来。", "inference"),
+                ItemExplanation("q2", "A", "举社交媒体视频的例子是为了说明趋势如何被放大和传播。", "inference"),
+                ItemExplanation("q3", "C", "全文围绕二手购物走红背后的务实和社会性动机展开。", "main_idea"),
+                ItemExplanation("q4", "B", "作者总体持认可态度，但并未把现象说得过于理想化。", "attitude"),
+                ItemExplanation("q5", "A", "细节题，对应价格、个性和社会意义三方面原因。", "detail"),
+            ]
+            passage = Passage(
+                title="Why Used Stores Appeal to the Young",
+                paragraphs=[
+                    "Second-hand stores used to be seen mainly as places for people with limited budgets. Today, however, many young shoppers view them differently. They still appreciate lower prices, but they also enjoy the possibility of finding items that feel more personal than those sold in large chain stores.",
+                    "Part of the change comes from social media. Short videos often turn a single lucky purchase into a story about creativity, sustainability, or identity. As a result, shopping itself begins to look less like a simple exchange of money and more like a way to express taste and values.",
+                    "This does not mean every buyer has the same motive. Some are mainly trying to save money, while others want to reduce waste or avoid mass-produced products. Yet the trend has grown because second-hand shopping allows these practical and symbolic motives to meet in one place.",
+                ],
+            )
+            topic = "second-hand shopping trend"
         return QuestionSet(
             id=make_id("qs"),
             level=level,
             question_type=QuestionType.CAREFUL_READING,
             slot=slot,
             title=f"仔细阅读 {slot}",
-            topic="reading strategy",
+            topic=topic,
             passage=passage,
             questions=questions,
             answer_key=answer_key,
             analysis=AnalysisReport(
                 overall_strategy="先看题干考点，再回文找定位句，不要整篇逐句硬读。",
-                overall_summary="这篇仔细阅读覆盖主旨、细节、推断、词义和态度五类高频题。",
+                overall_summary=(
+                    "这篇仔细阅读更偏事实检索、结果理解和语境释义。"
+                    if slot == 1
+                    else "这篇仔细阅读更偏观点推断、例证作用和作者态度判断。"
+                ),
                 item_explanations=explanations,
                 test_tips=[
-                    "主旨题先看首段和末段。",
-                    "词义题优先看上下文逻辑而不是只盯住单词本身。",
+                    "事实驱动文先抓实验/报告目的、过程和结果。",
+                    "观点驱动文先抓转折、例证意图和作者立场。",
+                    "不要被原词重现迷惑，要看是否真的对应原文逻辑。",
                 ],
             ),
             vocabulary=[
-                VocabularyItem("deliberate", "deliberate", level.value, "有意的，深思熟虑的"),
-                VocabularyItem("skim", "skim", level.value, "略读"),
-                VocabularyItem("reflection", "reflection", level.value, "复盘，反思"),
+                VocabularyItem(
+                    "consolidation" if slot == 1 else "trend",
+                    "consolidation" if slot == 1 else "trend",
+                    level.value,
+                    "巩固，强化" if slot == 1 else "趋势，潮流",
+                ),
+                VocabularyItem(
+                    "participant" if slot == 1 else "consumer",
+                    "participant" if slot == 1 else "consumer",
+                    level.value,
+                    "参与者" if slot == 1 else "消费者",
+                ),
+                VocabularyItem(
+                    "finding" if slot == 1 else "identity",
+                    "finding" if slot == 1 else "identity",
+                    level.value,
+                    "研究发现" if slot == 1 else "身份认同",
+                ),
             ],
             shared_options=[],
             word_count=320 if level is Level.CET4 else 420,
@@ -384,7 +439,7 @@ class MockQuestionFactory:
             reference_answer=reference,
             rubric_focus=["content_relevance", "coherence", "grammar", "lexical_accuracy"],
             min_response_words=min_words,
-            max_response_words=min_words + 80,
+            max_response_words=180 if level is Level.CET4 else 200,
             word_count=len(reference.split()),
             generator_model=model_name,
             source_type="mock",

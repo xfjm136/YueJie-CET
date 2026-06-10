@@ -51,13 +51,15 @@ class PromptTests(unittest.TestCase):
 
     def test_careful_reading_spec_mentions_core_question_types(self) -> None:
         spec = self.pipeline._question_spec(Level.CET6, QuestionType.CAREFUL_READING, 2)
-        self.assertIn("CET6 390-470 words", spec)
+        self.assertIn("CET6 400-450 words", spec)
         self.assertIn("exactly 5 four-option multiple-choice questions", spec)
-        self.assertIn("main idea, detail, inference, vocabulary in context, and attitude/tone", spec)
+        self.assertIn("Question stems may be either direct questions or unfinished statements", spec)
+        self.assertIn("do not force exactly one of each", spec)
+        self.assertIn("psychology, ethics, technology-reflection", spec)
 
     def test_writing_spec_mentions_minimum_words(self) -> None:
         spec = self.pipeline._question_spec(Level.CET4, QuestionType.WRITING, None)
-        self.assertIn("no less than 120 words", spec)
+        self.assertIn("at least 120 words but no more than 180 words", spec)
         self.assertIn("high-scoring sample essay", spec)
 
     def test_translation_spec_mentions_chinese_source_length(self) -> None:
@@ -118,10 +120,40 @@ class PromptTests(unittest.TestCase):
             2,
             "推理判断不稳定",
         )
-        self.assertEqual(blueprint["target_word_count"], 430)
+        self.assertEqual(blueprint["target_word_count"], 425)
         self.assertEqual(blueprint["vocabulary_target_count"], 5)
-        self.assertIn("inference", blueprint["skill_focus"])
+        self.assertTrue(any("inference" in item for item in blueprint["skill_focus"]))
         self.assertIn("推理判断不稳定", blueprint["weakness_focus"])
+
+    def test_careful_reading_blueprints_differ_by_slot_and_level(self) -> None:
+        cet4_slot1 = self.pipeline._build_blueprint(
+            Level.CET4,
+            QuestionType.CAREFUL_READING,
+            1,
+            None,
+        )
+        cet4_slot2 = self.pipeline._build_blueprint(
+            Level.CET4,
+            QuestionType.CAREFUL_READING,
+            2,
+            None,
+        )
+        cet6_slot1 = self.pipeline._build_blueprint(
+            Level.CET6,
+            QuestionType.CAREFUL_READING,
+            1,
+            None,
+        )
+        cet6_slot2 = self.pipeline._build_blueprint(
+            Level.CET6,
+            QuestionType.CAREFUL_READING,
+            2,
+            None,
+        )
+        self.assertIn("research-style", cet4_slot1["register"])
+        self.assertIn("consumer commentary", cet4_slot2["register"])
+        self.assertIn("business", cet6_slot1["register"])
+        self.assertIn("reflective or critical", cet6_slot2["register"])
 
     def test_postprocess_normalizes_careful_reading_options_and_skill_tags(self) -> None:
         payload = {

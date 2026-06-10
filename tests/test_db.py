@@ -82,7 +82,7 @@ def build_subjective_question_set(question_type: QuestionType = QuestionType.WRI
             else ["translation_accuracy", "translation_fluency", "grammar", "lexical_accuracy"]
         ),
         min_response_words=120,
-        max_response_words=220,
+        max_response_words=180 if question_type is QuestionType.WRITING else 220,
     )
 
 

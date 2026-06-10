@@ -66,7 +66,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(len(validated["questions"]), 10)
         self.assertEqual(validated["answer_key"][0], "O")
 
-    def test_careful_reading_requires_exact_skill_distribution(self) -> None:
+    def test_careful_reading_allows_realistic_fact_driven_skill_mix(self) -> None:
         payload = {
             "title": "Urban Noise",
             "topic": "city life",
@@ -81,22 +81,22 @@ class ValidationTests(unittest.TestCase):
                 ],
             },
             "questions": [
-                {"id": "q1", "prompt": "What is the main idea of the passage?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "main_idea", "hint": None},
-                {"id": "q2", "prompt": "According to the study, why did workers perform worse?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
-                {"id": "q3", "prompt": "What can be inferred about sleep interruption?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
+                {"id": "q1", "prompt": "According to the study, why did workers perform worse?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
+                {"id": "q2", "prompt": "What did the researchers find about noisy workplaces?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
+                {"id": "q3", "prompt": "The author mentions sleep interruption to show that ________", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
                 {"id": "q4", "prompt": "The word 'adapted' most nearly means", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "vocabulary_in_context", "hint": None},
-                {"id": "q5", "prompt": "What is the author's attitude toward urban-noise control?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "attitude", "hint": None},
+                {"id": "q5", "prompt": "What can be inferred about urban residents?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
             ],
             "answer_key": ["A", "B", "C", "D", "A"],
             "analysis": {
                 "overall_strategy": "先看首段和各段主题句。",
                 "overall_summary": "文章讨论城市噪音的影响与治理。",
                 "item_explanations": [
-                    {"question_id": "q1", "correct_answer": "A", "explanation": "对应主旨。", "skill_tag": "main_idea"},
+                    {"question_id": "q1", "correct_answer": "A", "explanation": "对应细节。", "skill_tag": "detail"},
                     {"question_id": "q2", "correct_answer": "B", "explanation": "对应细节。", "skill_tag": "detail"},
-                    {"question_id": "q3", "correct_answer": "C", "explanation": "对应推断。", "skill_tag": "inference"},
+                    {"question_id": "q3", "correct_answer": "C", "explanation": "对应细节。", "skill_tag": "detail"},
                     {"question_id": "q4", "correct_answer": "D", "explanation": "对应词义。", "skill_tag": "vocabulary_in_context"},
-                    {"question_id": "q5", "correct_answer": "A", "explanation": "对应态度。", "skill_tag": "attitude"},
+                    {"question_id": "q5", "correct_answer": "A", "explanation": "对应推断。", "skill_tag": "inference"},
                 ],
                 "test_tips": ["关注主旨句", "回文定位", "结合上下文"],
             },
@@ -108,6 +108,7 @@ class ValidationTests(unittest.TestCase):
         }
         validated = self.validator.validate(payload, Level.CET4, QuestionType.CAREFUL_READING, 1)
         self.assertEqual(validated["questions"][3]["skill_tag"], "vocabulary_in_context")
+        self.assertEqual(validated["questions"][2]["prompt"], "The author mentions sleep interruption to show that ________")
 
     def test_invalid_careful_reading_raises(self) -> None:
         payload = {
@@ -127,6 +128,50 @@ class ValidationTests(unittest.TestCase):
         }
         with self.assertRaises(QuestionSetValidationError):
             self.validator.validate(payload, Level.CET4, QuestionType.CAREFUL_READING, 1)
+
+    def test_careful_reading_viewpoint_driven_mix_passes_for_slot_two(self) -> None:
+        payload = {
+            "title": "Remote Work Debate",
+            "topic": "work culture",
+            "shared_options": [],
+            "passage": {
+                "title": "Remote Work Debate",
+                "paragraphs": [
+                    "Remote work is no longer a temporary solution for many organizations. What began as an emergency measure has gradually become a new way of organizing labor, communication, and evaluation. Supporters argue that it gives workers greater autonomy and helps employers recruit talent from a wider geographical area. Critics, however, say that flexibility can hide new forms of pressure, especially when employees feel they must stay constantly available to prove commitment.",
+                    "The debate is not simply about where people work. It is also about what managers believe productivity looks like. In some companies, workers are trusted to arrange their own schedules as long as results remain strong. In others, digital monitoring tools record activity in a way that suggests output matters less than visible signs of effort. This difference reveals an older management habit: many leaders still equate supervision with control, even when the work itself requires concentration rather than constant display.",
+                    "Advocates of remote work often cite improved work-life balance, but that phrase can be misleading. Some employees do gain time by avoiding long commutes, yet others find that work expands into evenings and weekends. The home office can remove one boundary while erasing another. As a result, the same arrangement may feel liberating to one worker and exhausting to another.",
+                    "This is why the future of remote work depends less on technology than on institutional judgment. A company may adopt advanced platforms, but if it fails to clarify expectations, encourage recovery time, and judge performance by meaningful outcomes, flexibility becomes another source of uncertainty. The lesson is not that remote work is either inherently good or inherently harmful. Rather, it reflects the values of the system in which it operates.",
+                    "The passage therefore challenges a simple either-or debate. It suggests that remote work should not be praised merely because it feels modern, nor rejected simply because it changes established routines. What matters is whether organizations use flexibility to support sustained work, fair evaluation, and genuine recovery time. In this sense, the author is less interested in technology itself than in the assumptions behind management decisions. Remote work becomes a test of what companies truly value: trust and outcomes, or observation and control. This final contrast gives the passage its critical tone and explains why the author repeatedly returns to questions of judgment rather than convenience. It also clarifies why the article treats management culture, rather than software itself, as the deeper source of both promise and risk.",
+                ],
+            },
+            "questions": [
+                {"id": "q1", "prompt": "What can be inferred about some managers from Paragraph 2?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
+                {"id": "q2", "prompt": "Why does the author mention digital monitoring tools?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
+                {"id": "q3", "prompt": "What is the main idea of the passage?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "main_idea", "hint": None},
+                {"id": "q4", "prompt": "What is the author's attitude toward the promise of flexibility?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "attitude", "hint": None},
+                {"id": "q5", "prompt": "According to the passage, what may happen when boundaries disappear?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
+            ],
+            "answer_key": ["A", "B", "C", "D", "A"],
+            "analysis": {
+                "overall_strategy": "关注作者如何转折和举例。",
+                "overall_summary": "文章讨论远程办公背后的管理逻辑。",
+                "item_explanations": [
+                    {"question_id": "q1", "correct_answer": "A", "explanation": "对应推断。", "skill_tag": "inference"},
+                    {"question_id": "q2", "correct_answer": "B", "explanation": "对应例证目的。", "skill_tag": "inference"},
+                    {"question_id": "q3", "correct_answer": "C", "explanation": "对应主旨。", "skill_tag": "main_idea"},
+                    {"question_id": "q4", "correct_answer": "D", "explanation": "对应态度。", "skill_tag": "attitude"},
+                    {"question_id": "q5", "correct_answer": "A", "explanation": "对应细节。", "skill_tag": "detail"},
+                ],
+                "test_tips": ["看转折", "看举例意图", "看结论句"],
+            },
+            "vocabulary": [
+                {"lemma": "autonomy", "surface_form": "autonomy", "level_hint": "cet6", "meaning_zh": "自主性", "example_en": ""},
+                {"lemma": "monitoring", "surface_form": "monitoring", "level_hint": "cet6", "meaning_zh": "监控", "example_en": ""},
+                {"lemma": "boundary", "surface_form": "boundary", "level_hint": "cet6", "meaning_zh": "边界", "example_en": ""},
+            ],
+        }
+        validated = self.validator.validate(payload, Level.CET6, QuestionType.CAREFUL_READING, 2)
+        self.assertEqual(validated["questions"][3]["skill_tag"], "attitude")
 
     def test_banked_cloze_rejects_duplicate_answer_letters(self) -> None:
         payload = {
@@ -335,7 +380,7 @@ class ValidationTests(unittest.TestCase):
             "reference_answer": "Independent thinking remains essential in modern learning. Although digital tools can save time and improve access to information, students still need to judge evidence, organize ideas, and form their own conclusions. In classroom practice, learners benefit most when they use technology as support rather than as a substitute for reflection. For example, an online summary may help a student review faster, but deep understanding still requires careful reading, note-taking, and personal reflection on evidence. Universities should therefore teach students how to work with new tools while preserving habits of questioning, comparison, and self-correction. In this way, technology can increase efficiency without weakening the human ability to think clearly, argue responsibly, and learn for the long term. It also helps students remain confident when they face new information and unfamiliar opinions.",
             "rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"],
             "min_response_words": 120,
-            "max_response_words": 220,
+            "max_response_words": 180,
             "shared_options": [],
             "passage": {
                 "title": "Writing Task",
