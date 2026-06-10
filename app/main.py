@@ -15,10 +15,14 @@ def _find_rust_frontend() -> Path | None:
         PROJECT_ROOT / "target" / "release" / "yuejie-cet-rs",
         PROJECT_ROOT / "target" / "debug" / "yuejie-cet-rs",
     ]
-    for candidate in candidates:
-        if candidate.exists() and os.access(candidate, os.X_OK):
-            return candidate
-    return None
+    available = [
+        candidate
+        for candidate in candidates
+        if candidate.exists() and os.access(candidate, os.X_OK)
+    ]
+    if not available:
+        return None
+    return max(available, key=lambda path: path.stat().st_mtime)
 
 
 def main() -> None:

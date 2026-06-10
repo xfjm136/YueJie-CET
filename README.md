@@ -30,7 +30,7 @@ cargo build --release
 yuejie-cet
 ```
 
-默认模型使用 `deepseek-v4-pro`。如果没有配置 `DEEPSEEK_API_KEY`，程序会自动退回到内置示例题，方便先联调界面和流程。`yuejie-cet` 会优先启动 `target/release/yuejie-cet-rs`，找不到时再回退到 Python 版界面。
+默认模型使用 `deepseek-v4-pro`。如果没有配置 `DEEPSEEK_API_KEY`，程序会直接报错并拒绝生成题目，不再使用本地题目兜底。`yuejie-cet` 会在 `target/release/yuejie-cet-rs` 和 `target/debug/yuejie-cet-rs` 中自动选择最近一次编译的 Rust 前端。
 
 ## 目录结构
 

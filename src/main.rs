@@ -1926,11 +1926,10 @@ impl YueJieRustApp {
                             "浅色"
                         },
                         palette_mode_label(&self.settings.palette_mode),
-                        if self.settings.background_mode == "opaque" {
-                            "不透明"
-                        } else {
-                            "透明"
-                        }
+                        effective_background_mode_label(
+                            &self.settings.theme_mode,
+                            &self.settings.background_mode,
+                        )
                     ),
                     Style::default().fg(palette.muted),
                 )),
@@ -3397,11 +3396,12 @@ impl YueJieRustApp {
             palette,
             "背景",
             if self.settings.theme_mode == "light" {
-                "浅色模式固定不透明"
-            } else if self.settings.background_mode == "opaque" {
-                "不透明"
+                "浅色模式已锁定不透明"
             } else {
-                "透明"
+                effective_background_mode_label(
+                    &self.settings.theme_mode,
+                    &self.settings.background_mode,
+                )
             },
             self.settings_focus == 1,
             Action::ToggleBackground,
@@ -3456,13 +3456,10 @@ impl YueJieRustApp {
                     } else {
                         "浅色"
                     },
-                    if self.settings.theme_mode == "light" {
-                        "不透明"
-                    } else if self.settings.background_mode == "opaque" {
-                        "不透明"
-                    } else {
-                        "透明"
-                    }
+                    effective_background_mode_label(
+                        &self.settings.theme_mode,
+                        &self.settings.background_mode,
+                    )
                 )),
                 Line::from(format!(
                     "配色：{}",
@@ -4521,7 +4518,7 @@ impl YueJieRustApp {
         frame.render_widget(
             Paragraph::new(self.status_line.clone())
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(palette.muted).bg(palette.panel_alt)),
+                .style(Style::default().fg(palette.muted).bg(palette.panel)),
             area,
         );
     }
@@ -4543,7 +4540,7 @@ struct Palette {
 
 impl Palette {
     fn new(theme_mode: &str, background_mode: &str, palette_mode: &str) -> Self {
-        let transparent = background_mode == "transparent";
+        let transparent = effective_background_mode(theme_mode, background_mode) == "transparent";
         let transparent_panels = transparent && theme_mode == "dark";
         match (theme_mode, palette_mode) {
             ("light", "ink") => Self {
@@ -4761,6 +4758,24 @@ fn interactive_border_style(palette: Palette, selected: bool) -> Style {
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette.border)
+    }
+}
+
+fn effective_background_mode(theme_mode: &str, background_mode: &str) -> &'static str {
+    if theme_mode == "light" {
+        "opaque"
+    } else if background_mode == "transparent" {
+        "transparent"
+    } else {
+        "opaque"
+    }
+}
+
+fn effective_background_mode_label(theme_mode: &str, background_mode: &str) -> &'static str {
+    if effective_background_mode(theme_mode, background_mode) == "transparent" {
+        "透明"
+    } else {
+        "不透明"
     }
 }
 
