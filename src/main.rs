@@ -5,7 +5,9 @@ use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -445,6 +447,7 @@ struct GeneratingTask {
     job_id: u64,
     started_at: Instant,
     receiver: Receiver<GenerationMessage>,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 struct BackendBridge {
@@ -475,7 +478,11 @@ impl BackendBridge {
         timeout: Duration,
     ) -> Result<Value> {
         let mut command = Command::new(&self.python_bin);
-        command.current_dir(&self.root).arg("-u").arg("-m").arg("app.bridge");
+        command
+            .current_dir(&self.root)
+            .arg("-u")
+            .arg("-m")
+            .arg("app.bridge");
         for arg in args {
             command.arg(arg);
         }
@@ -505,7 +512,10 @@ impl BackendBridge {
             if start.elapsed() >= timeout {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(anyhow!("bridge command timed out after {}s", timeout.as_secs()));
+                return Err(anyhow!(
+                    "bridge command timed out after {}s",
+                    timeout.as_secs()
+                ));
             }
             std::thread::sleep(Duration::from_millis(50));
         };
@@ -566,6 +576,7 @@ impl BackendBridge {
         type_choice: TypeChoice,
         job_id: u64,
         sender: Sender<GenerationMessage>,
+        cancel_flag: Arc<AtomicBool>,
     ) -> Result<()> {
         let mut command = Command::new(&self.python_bin);
         command
@@ -584,9 +595,23 @@ impl BackendBridge {
         if let Some(slot) = slot_holder.as_deref() {
             command.arg("--slot").arg(slot);
         }
-        let mut child = command.spawn().context("failed to start live generation command")?;
-        let stdout = child.stdout.take().context("failed to capture live generation stdout")?;
-        let stderr = child.stderr.take().context("failed to capture live generation stderr")?;
+        let mut child = command
+            .spawn()
+            .context("failed to start live generation command")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("failed to capture live generation stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("failed to capture live generation stderr")?;
+        let (line_tx, line_rx) = mpsc::channel::<Result<String, String>>();
+        let stdout_handle = std::thread::spawn(move || {
+            for raw_line in BufReader::new(stdout).lines() {
+                let _ = line_tx.send(raw_line.map_err(|err| err.to_string()));
+            }
+        });
         let stderr_handle = std::thread::spawn(move || {
             let mut stderr_text = String::new();
             let _ = BufReader::new(stderr).read_to_string(&mut stderr_text);
@@ -594,80 +619,127 @@ impl BackendBridge {
         });
 
         let mut saw_terminal_event = false;
-        for raw_line in BufReader::new(stdout).lines() {
-            let line = raw_line?;
-            if line.trim().is_empty() {
-                continue;
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Ok(());
             }
-            let value: Value = serde_json::from_str(&line)
-                .with_context(|| format!("failed to parse live generation output: {}", line))?;
-            match value.get("event").and_then(Value::as_str).unwrap_or_default() {
-                "progress" => {
-                    let phase = value
-                        .get("phase")
-                        .and_then(Value::as_str)
-                        .unwrap_or("progress")
-                        .to_string();
-                    let message = value
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("正在生成题目。")
-                        .to_string();
-                    let _ = sender.send(GenerationMessage::Progress {
-                        job_id,
-                        phase,
-                        message,
-                    });
-                }
-                "result" => {
-                    let question_value = value
-                        .get("question_set")
-                        .cloned()
-                        .context("live generation result missing question_set")?;
-                    let question_set: QuestionSet = serde_json::from_value(question_value)?;
-                    let _ = sender.send(GenerationMessage::Finished {
-                        job_id,
-                        result: Ok(question_set),
-                    });
-                    saw_terminal_event = true;
-                }
-                "error" => {
-                    let error = value
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("bridge command failed")
-                        .to_string();
-                    let _ = sender.send(GenerationMessage::Finished {
-                        job_id,
-                        result: Err(error),
-                    });
-                    saw_terminal_event = true;
-                }
-                _ => {}
-            }
-        }
 
-        let status = child.wait()?;
-        let stderr_text = stderr_handle.join().unwrap_or_default();
-        if !saw_terminal_event {
-            if status.success() {
-                let _ = sender.send(GenerationMessage::Finished {
-                    job_id,
-                    result: Err("生成流程提前结束，未收到结果。".to_string()),
-                });
-            } else {
-                let detail = if stderr_text.trim().is_empty() {
-                    "bridge command failed".to_string()
-                } else {
-                    stderr_text.trim().to_string()
-                };
-                let _ = sender.send(GenerationMessage::Finished {
-                    job_id,
-                    result: Err(detail),
-                });
+            match line_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let value: Value = serde_json::from_str(&line).with_context(|| {
+                        format!("failed to parse live generation output: {}", line)
+                    })?;
+                    match value
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                    {
+                        "progress" => {
+                            let phase = value
+                                .get("phase")
+                                .and_then(Value::as_str)
+                                .unwrap_or("progress")
+                                .to_string();
+                            let message = value
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("正在生成题目。")
+                                .to_string();
+                            let _ = sender.send(GenerationMessage::Progress {
+                                job_id,
+                                phase,
+                                message,
+                            });
+                        }
+                        "result" => {
+                            let question_value = value
+                                .get("question_set")
+                                .cloned()
+                                .context("live generation result missing question_set")?;
+                            let question_set: QuestionSet = serde_json::from_value(question_value)?;
+                            let _ = sender.send(GenerationMessage::Finished {
+                                job_id,
+                                result: Ok(question_set),
+                            });
+                            saw_terminal_event = true;
+                        }
+                        "error" => {
+                            let error = value
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .unwrap_or("bridge command failed")
+                                .to_string();
+                            let _ = sender.send(GenerationMessage::Finished {
+                                job_id,
+                                result: Err(error),
+                            });
+                            saw_terminal_event = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(err)) => {
+                    let _ = sender.send(GenerationMessage::Finished {
+                        job_id,
+                        result: Err(err),
+                    });
+                    saw_terminal_event = true;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {}
+            }
+
+            if let Some(status) = child.try_wait()? {
+                let _ = stdout_handle.join();
+                let stderr_text = stderr_handle.join().unwrap_or_default();
+                while let Ok(Ok(line)) = line_rx.try_recv() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let value: Value = serde_json::from_str(&line).with_context(|| {
+                        format!("failed to parse live generation output: {}", line)
+                    })?;
+                    if let Some("result") = value.get("event").and_then(Value::as_str) {
+                        let question_value = value
+                            .get("question_set")
+                            .cloned()
+                            .context("live generation result missing question_set")?;
+                        let question_set: QuestionSet = serde_json::from_value(question_value)?;
+                        let _ = sender.send(GenerationMessage::Finished {
+                            job_id,
+                            result: Ok(question_set),
+                        });
+                        saw_terminal_event = true;
+                    }
+                }
+                if !saw_terminal_event {
+                    if status.success() {
+                        let _ = sender.send(GenerationMessage::Finished {
+                            job_id,
+                            result: Err("生成流程提前结束，未收到结果。".to_string()),
+                        });
+                    } else {
+                        let detail = if stderr_text.trim().is_empty() {
+                            "bridge command failed".to_string()
+                        } else {
+                            stderr_text.trim().to_string()
+                        };
+                        let _ = sender.send(GenerationMessage::Finished {
+                            job_id,
+                            result: Err(detail),
+                        });
+                    }
+                }
+                return Ok(());
             }
         }
-        Ok(())
     }
 
     fn submit(
@@ -764,7 +836,10 @@ impl PracticeState {
     }
 
     fn unanswered_count(&self) -> usize {
-        self.question_set.questions.len().saturating_sub(self.answered_count())
+        self.question_set
+            .questions
+            .len()
+            .saturating_sub(self.answered_count())
     }
 
     fn available_labels(&self) -> Vec<String> {
@@ -794,7 +869,9 @@ impl PracticeState {
         if self.question_set.question_type == "banked_cloze" {
             return;
         }
-        let qid = self.question_set.questions[self.selected_question].id.clone();
+        let qid = self.question_set.questions[self.selected_question]
+            .id
+            .clone();
         if let Some(current_answer) = self.answers.get(&qid) {
             if let Some(index) = self
                 .available_labels()
@@ -822,7 +899,9 @@ impl PracticeState {
             return;
         }
 
-        let qid = self.question_set.questions[self.selected_question].id.clone();
+        let qid = self.question_set.questions[self.selected_question]
+            .id
+            .clone();
         self.answers.insert(qid, answer.clone());
         if let Some(index) = self
             .available_labels()
@@ -844,7 +923,9 @@ impl PracticeState {
             self.answers.insert(qid, String::new());
             return;
         }
-        let qid = self.question_set.questions[self.selected_question].id.clone();
+        let qid = self.question_set.questions[self.selected_question]
+            .id
+            .clone();
         self.answers.insert(qid, String::new());
     }
 }
@@ -1057,6 +1138,9 @@ impl YueJieRustApp {
                 self.status_line = String::from("已返回等级选择。");
             }
             Screen::Generating => {
+                if let Some(task) = &self.generating_task {
+                    task.cancel_flag.store(true, Ordering::Relaxed);
+                }
                 self.generating_task = None;
                 self.open_type_screen()?;
                 self.status_line = String::from("已取消本次生成。");
@@ -1154,7 +1238,9 @@ impl YueJieRustApp {
     }
 
     fn handle_practice_key(&mut self, key: KeyEvent) -> Result<()> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S')) {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+        {
             self.submit_practice()?;
             return Ok(());
         }
@@ -1351,58 +1437,53 @@ impl YueJieRustApp {
                     self.perform_action(action)?;
                 }
             }
-            MouseEventKind::ScrollUp => {
-                match self.screen {
-                    Screen::Practice => {
-                        if let Some(practice) = &mut self.practice {
-                            practice.passage_scroll = practice.passage_scroll.saturating_sub(2);
-                        }
+            MouseEventKind::ScrollUp => match self.screen {
+                Screen::Practice => {
+                    if let Some(practice) = &mut self.practice {
+                        practice.passage_scroll = practice.passage_scroll.saturating_sub(2);
                     }
-                    Screen::Result => {
-                        self.result_detail_scroll = self.result_detail_scroll.saturating_sub(2);
-                    }
-                    Screen::Review => {
-                        self.review_detail_scroll = self.review_detail_scroll.saturating_sub(2);
-                    }
-                    Screen::History if !self.history.is_empty() => {
-                        self.history_index = self.history_index.saturating_sub(1);
-                    }
-                    Screen::Weakness if !self.weakness.is_empty() => {
-                        self.weakness_index = self.weakness_index.saturating_sub(1);
-                    }
-                    Screen::Vocabulary if !self.vocabulary.is_empty() => {
-                        self.vocabulary_index = self.vocabulary_index.saturating_sub(1);
-                    }
-                    _ => {}
                 }
-            }
-            MouseEventKind::ScrollDown => {
-                match self.screen {
-                    Screen::Practice => {
-                        if let Some(practice) = &mut self.practice {
-                            practice.passage_scroll = practice.passage_scroll.saturating_add(2);
-                        }
-                    }
-                    Screen::Result => {
-                        self.result_detail_scroll = self.result_detail_scroll.saturating_add(2);
-                    }
-                    Screen::Review => {
-                        self.review_detail_scroll = self.review_detail_scroll.saturating_add(2);
-                    }
-                    Screen::History if !self.history.is_empty() => {
-                        self.history_index = (self.history_index + 1).min(self.history.len() - 1);
-                    }
-                    Screen::Weakness if !self.weakness.is_empty() => {
-                        self.weakness_index =
-                            (self.weakness_index + 1).min(self.weakness.len() - 1);
-                    }
-                    Screen::Vocabulary if !self.vocabulary.is_empty() => {
-                        self.vocabulary_index =
-                            (self.vocabulary_index + 1).min(self.vocabulary.len() - 1);
-                    }
-                    _ => {}
+                Screen::Result => {
+                    self.result_detail_scroll = self.result_detail_scroll.saturating_sub(2);
                 }
-            }
+                Screen::Review => {
+                    self.review_detail_scroll = self.review_detail_scroll.saturating_sub(2);
+                }
+                Screen::History if !self.history.is_empty() => {
+                    self.history_index = self.history_index.saturating_sub(1);
+                }
+                Screen::Weakness if !self.weakness.is_empty() => {
+                    self.weakness_index = self.weakness_index.saturating_sub(1);
+                }
+                Screen::Vocabulary if !self.vocabulary.is_empty() => {
+                    self.vocabulary_index = self.vocabulary_index.saturating_sub(1);
+                }
+                _ => {}
+            },
+            MouseEventKind::ScrollDown => match self.screen {
+                Screen::Practice => {
+                    if let Some(practice) = &mut self.practice {
+                        practice.passage_scroll = practice.passage_scroll.saturating_add(2);
+                    }
+                }
+                Screen::Result => {
+                    self.result_detail_scroll = self.result_detail_scroll.saturating_add(2);
+                }
+                Screen::Review => {
+                    self.review_detail_scroll = self.review_detail_scroll.saturating_add(2);
+                }
+                Screen::History if !self.history.is_empty() => {
+                    self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                }
+                Screen::Weakness if !self.weakness.is_empty() => {
+                    self.weakness_index = (self.weakness_index + 1).min(self.weakness.len() - 1);
+                }
+                Screen::Vocabulary if !self.vocabulary.is_empty() => {
+                    self.vocabulary_index =
+                        (self.vocabulary_index + 1).min(self.vocabulary.len() - 1);
+                }
+                _ => {}
+            },
             _ => {}
         }
         Ok(())
@@ -1528,7 +1609,8 @@ impl YueJieRustApp {
                 } else {
                     "dark".to_string()
                 };
-                if self.settings.theme_mode == "light" && self.settings.background_mode != "opaque" {
+                if self.settings.theme_mode == "light" && self.settings.background_mode != "opaque"
+                {
                     self.settings.background_mode = "opaque".to_string();
                     self.backend
                         .set_setting("background_mode", &self.settings.background_mode)?;
@@ -1569,7 +1651,8 @@ impl YueJieRustApp {
                 );
             }
             Action::TogglePalette => {
-                self.settings.palette_mode = next_palette_mode(&self.settings.palette_mode).to_string();
+                self.settings.palette_mode =
+                    next_palette_mode(&self.settings.palette_mode).to_string();
                 self.backend
                     .set_setting("palette_mode", &self.settings.palette_mode)?;
                 self.status_line = format!(
@@ -1614,6 +1697,7 @@ impl YueJieRustApp {
         self.generation_sequence = self.generation_sequence.wrapping_add(1);
         let job_id = self.generation_sequence;
         let (tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
         self.generation_phase = String::from("boot");
         self.generation_message = format!(
             "已进入 {} {} 生成流程，正在启动 AI 出题引擎。",
@@ -1625,11 +1709,14 @@ impl YueJieRustApp {
             job_id,
             started_at: Instant::now(),
             receiver: rx,
+            cancel_flag: cancel_flag.clone(),
         });
         self.generating_tick = 0;
         self.screen = Screen::Generating;
         std::thread::spawn(move || {
-            if let Err(err) = backend.stream_generate(level, type_choice, job_id, tx.clone()) {
+            if let Err(err) =
+                backend.stream_generate(level, type_choice, job_id, tx.clone(), cancel_flag)
+            {
                 let _ = tx.send(GenerationMessage::Finished {
                     job_id,
                     result: Err(err.to_string()),
@@ -1809,9 +1896,17 @@ impl YueJieRustApp {
                 Line::from(Span::styled(
                     format!(
                         "AI 四六级阅读专项训练 · {} · {} · 背景{}",
-                        if self.settings.theme_mode == "dark" { "深色" } else { "浅色" },
+                        if self.settings.theme_mode == "dark" {
+                            "深色"
+                        } else {
+                            "浅色"
+                        },
                         palette_mode_label(&self.settings.palette_mode),
-                        if self.settings.background_mode == "opaque" { "不透明" } else { "透明" }
+                        if self.settings.background_mode == "opaque" {
+                            "不透明"
+                        } else {
+                            "透明"
+                        }
                     ),
                     Style::default().fg(palette.muted),
                 )),
@@ -1920,7 +2015,11 @@ impl YueJieRustApp {
             stat_chunks[3],
             palette,
             "推荐动作",
-            if total_attempts == 0 { "开始刷题" } else { "继续训练" },
+            if total_attempts == 0 {
+                "开始刷题"
+            } else {
+                "继续训练"
+            },
             "从右侧菜单进入",
             None,
         );
@@ -1935,7 +2034,11 @@ impl YueJieRustApp {
             .split(chunks[3]);
         let trend_rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Length(5), Constraint::Min(4)])
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Min(4),
+            ])
             .split(bottom[0]);
         frame.render_widget(
             Sparkline::default()
@@ -1987,7 +2090,11 @@ impl YueJieRustApp {
         let menu_inner = simple_block("快速入口", palette).inner(bottom[1]);
         let menu_rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(4), Constraint::Length(4), Constraint::Length(4)])
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Length(4),
+                Constraint::Length(4),
+            ])
             .split(menu_inner);
         for row in 0..3 {
             let row_chunks = Layout::default()
@@ -2018,7 +2125,10 @@ impl YueJieRustApp {
                 Line::from("2. 长篇阅读先扫题干，再回文定位。"),
                 Line::from("3. 仔细阅读优先抓首段和转折句。"),
                 Line::from(""),
-                Line::from(format!("当前配色：{}", palette_mode_label(&self.settings.palette_mode))),
+                Line::from(format!(
+                    "当前配色：{}",
+                    palette_mode_label(&self.settings.palette_mode)
+                )),
                 Line::from(format!(
                     "当前状态：{}",
                     accuracy_band(recent_accuracy_percent / 100.0)
@@ -2036,7 +2146,11 @@ impl YueJieRustApp {
         let outer = centered_rect(70, 60, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(5), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(5),
+                Constraint::Length(1),
+            ])
             .split(outer);
         let header = Paragraph::new(Text::from(vec![
             Line::from(Span::styled("选择等级", title_style(palette))),
@@ -2169,7 +2283,10 @@ impl YueJieRustApp {
             ("保存结果", "入库题目、解析与词汇"),
         ];
         let header = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled("AI 正在生成真题级阅读题", title_style(palette))),
+            Line::from(Span::styled(
+                "AI 正在生成真题级阅读题",
+                title_style(palette),
+            )),
             Line::from(Span::styled(
                 format!(
                     "{} · {} · {} · 已等待 {:02}s",
@@ -2218,7 +2335,10 @@ impl YueJieRustApp {
             left[0],
         );
 
-        let mut step_lines = vec![Line::from(Span::styled("阶段看板", title_style(palette))), Line::from("")];
+        let mut step_lines = vec![
+            Line::from(Span::styled("阶段看板", title_style(palette))),
+            Line::from(""),
+        ];
         for (index, (title, detail)) in steps.iter().enumerate() {
             let marker = if index < active_index {
                 "[OK]"
@@ -2239,13 +2359,7 @@ impl YueJieRustApp {
         );
 
         let spinner_frames = [
-            "[=     ]",
-            "[==    ]",
-            "[===   ]",
-            "[ ===  ]",
-            "[  === ]",
-            "[   ===]",
-            "[    ==]",
+            "[=     ]", "[==    ]", "[===   ]", "[ ===  ]", "[  === ]", "[   ===]", "[    ==]",
             "[     =]",
         ];
         let spinner = spinner_frames[self.generating_tick % spinner_frames.len()];
@@ -2268,7 +2382,10 @@ impl YueJieRustApp {
             right[0],
         );
 
-        let mut log_lines = vec![Line::from(Span::styled("最近日志", title_style(palette))), Line::from("")];
+        let mut log_lines = vec![
+            Line::from(Span::styled("最近日志", title_style(palette))),
+            Line::from(""),
+        ];
         for item in &self.generation_log {
             log_lines.push(Line::from(format!("- {}", item)));
         }
@@ -2613,11 +2730,8 @@ impl YueJieRustApp {
 
         let recent_items = self.history.iter().take(5).collect::<Vec<_>>();
         let recent_count = recent_items.len().max(1) as f64;
-        let recent_accuracy = recent_items
-            .iter()
-            .map(|item| item.accuracy)
-            .sum::<f64>()
-            / recent_count;
+        let recent_accuracy =
+            recent_items.iter().map(|item| item.accuracy).sum::<f64>() / recent_count;
         let recent_duration = recent_items
             .iter()
             .map(|item| item.duration_seconds)
@@ -2701,12 +2815,7 @@ impl YueJieRustApp {
             state.select(Some(self.history_index));
             let list = List::new(items)
                 .block(simple_block("历史记录", palette))
-                .highlight_style(
-                    Style::default()
-                        .fg(palette.highlight_text)
-                        .bg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                );
+                .highlight_style(interactive_selected_style(palette));
             frame.render_stateful_widget(list, body[0], &mut state);
             let row_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -2741,7 +2850,11 @@ impl YueJieRustApp {
                     )),
                     Line::from(format!(
                         "重做    {}",
-                        if selected.is_history_retry == 1 { "是" } else { "否" }
+                        if selected.is_history_retry == 1 {
+                            "是"
+                        } else {
+                            "否"
+                        }
                     )),
                 ]))
                 .wrap(Wrap { trim: false })
@@ -2754,8 +2867,7 @@ impl YueJieRustApp {
                     Line::from(format!("主题：{}", selected.topic)),
                     Line::from(format!(
                         "题型：{} / 等级：{}",
-                        format_question_label(&selected.question_type, selected.slot)
-                        ,
+                        format_question_label(&selected.question_type, selected.slot),
                         format_level_label(&selected.level)
                     )),
                     Line::from(format!("时间：{}", selected.submitted_at)),
@@ -2768,7 +2880,11 @@ impl YueJieRustApp {
                         "得分：{}/{} | 重做：{}",
                         selected.correct_count,
                         selected.total_count,
-                        if selected.is_history_retry == 1 { "是" } else { "否" }
+                        if selected.is_history_retry == 1 {
+                            "是"
+                        } else {
+                            "否"
+                        }
                     )),
                     Line::from(""),
                     Line::from(format!("表现评估：{}", accuracy_band(selected.accuracy))),
@@ -2821,7 +2937,7 @@ impl YueJieRustApp {
         let Some(bundle) = self.review.clone() else {
             return;
         };
-        let outer = centered_rect(94, 92, area);
+        let outer = centered_rect(96, 96, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -2860,7 +2976,10 @@ impl YueJieRustApp {
             palette,
             "正确率",
             &format!("{:.1}%", bundle.result.accuracy * 100.0),
-            &format!("{}/{}", bundle.result.correct_count, bundle.result.total_count),
+            &format!(
+                "{}/{}",
+                bundle.result.correct_count, bundle.result.total_count
+            ),
             Some(bundle.result.accuracy),
         );
         self.draw_metric_box(
@@ -2943,8 +3062,8 @@ impl YueJieRustApp {
                 lines.extend(vocab_lines);
                 lines
             }))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("复盘词汇", palette)),
+            .wrap(Wrap { trim: false })
+            .block(simple_block("复盘词汇", palette)),
             right[1],
         );
 
@@ -3047,12 +3166,7 @@ impl YueJieRustApp {
             frame.render_stateful_widget(
                 List::new(items)
                     .block(simple_block("总结列表", palette))
-                .highlight_style(
-                    Style::default()
-                        .fg(palette.highlight_text)
-                        .bg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                    .highlight_style(interactive_selected_style(palette)),
                 body[0],
                 &mut state,
             );
@@ -3154,12 +3268,7 @@ impl YueJieRustApp {
             frame.render_stateful_widget(
                 List::new(items)
                     .block(simple_block("词汇累计", palette))
-                .highlight_style(
-                    Style::default()
-                        .fg(palette.highlight_text)
-                        .bg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                    .highlight_style(interactive_selected_style(palette)),
                 body[0],
                 &mut state,
             );
@@ -3246,7 +3355,11 @@ impl YueJieRustApp {
             toggles[0],
             palette,
             "主题",
-            if self.settings.theme_mode == "dark" { "深色" } else { "浅色" },
+            if self.settings.theme_mode == "dark" {
+                "深色"
+            } else {
+                "浅色"
+            },
             self.settings_focus == 0,
             Action::ToggleTheme,
         );
@@ -3292,13 +3405,7 @@ impl YueJieRustApp {
                 Line::from(vec![
                     Span::styled("      ", Style::default().bg(palette.panel_alt)),
                     Span::raw(" 次级   "),
-                    Span::styled(
-                        "  高亮  ",
-                        Style::default()
-                            .fg(palette.highlight_text)
-                            .bg(palette.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("  高亮  ", interactive_selected_style(palette)),
                 ]),
                 Line::from(vec![
                     Span::styled("      ", Style::default().bg(palette.success)),
@@ -3316,7 +3423,11 @@ impl YueJieRustApp {
                 Line::from(format!("模型：{}", self.settings.deepseek_model)),
                 Line::from(format!(
                     "主题：{} / 背景：{}",
-                    if self.settings.theme_mode == "dark" { "深色" } else { "浅色" },
+                    if self.settings.theme_mode == "dark" {
+                        "深色"
+                    } else {
+                        "浅色"
+                    },
                     if self.settings.theme_mode == "light" {
                         "不透明"
                     } else if self.settings.background_mode == "opaque" {
@@ -3325,11 +3436,18 @@ impl YueJieRustApp {
                         "透明"
                     }
                 )),
-                Line::from(format!("配色：{}", palette_mode_label(&self.settings.palette_mode))),
+                Line::from(format!(
+                    "配色：{}",
+                    palette_mode_label(&self.settings.palette_mode)
+                )),
                 Line::from(format!("数据库：{}", self.settings.db_path)),
                 Line::from(format!(
                     "API Key：{}",
-                    if self.settings.api_key_configured { "已配置" } else { "未配置" }
+                    if self.settings.api_key_configured {
+                        "已配置"
+                    } else {
+                        "未配置"
+                    }
                 )),
                 Line::from(""),
                 Line::from("建议：深色适合长时间刷题，浅色更接近纸面阅读。"),
@@ -3554,7 +3672,11 @@ impl YueJieRustApp {
     ) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Length(5), Constraint::Min(10)])
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Min(10),
+            ])
             .split(area);
         frame.render_widget(
             Paragraph::new(Text::from(vec![
@@ -3577,7 +3699,7 @@ impl YueJieRustApp {
                             .get(&practice.question_set.questions[practice.selected_blank].id)
                             .map(String::as_str)
                             .unwrap_or("")
-                        )
+                    )
                 )),
                 Line::from("先选空位，再点选项或直接键入 A-O；作答后自动跳到下一空。"),
             ]))
@@ -3647,7 +3769,14 @@ impl YueJieRustApp {
                 .get(&practice.question_set.questions[practice.selected_blank].id)
                 .map(|value| value == &label)
                 .unwrap_or(false);
-            self.draw_list_like_button(frame, target, palette, option, selected, Action::PracticeAssign(label));
+            self.draw_list_like_button(
+                frame,
+                target,
+                palette,
+                option,
+                selected,
+                Action::PracticeAssign(label),
+            );
         }
     }
 
@@ -3660,7 +3789,11 @@ impl YueJieRustApp {
     ) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Length(8), Constraint::Min(7)])
+            .constraints([
+                Constraint::Length(7),
+                Constraint::Length(8),
+                Constraint::Min(7),
+            ])
             .split(area);
 
         let current = &practice.question_set.questions[practice.selected_question];
@@ -3784,12 +3917,7 @@ impl YueJieRustApp {
         frame.render_stateful_widget(
             List::new(items)
                 .block(simple_block("题目列表", palette))
-                .highlight_style(
-                    Style::default()
-                        .fg(palette.highlight_text)
-                        .bg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                .highlight_style(interactive_selected_style(palette)),
             chunks[2],
             &mut state,
         );
@@ -3818,7 +3946,11 @@ impl YueJieRustApp {
     ) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Length(8), Constraint::Min(6)])
+            .constraints([
+                Constraint::Length(7),
+                Constraint::Length(8),
+                Constraint::Min(6),
+            ])
             .split(area);
 
         let current = &practice.question_set.questions[practice.selected_question];
@@ -3898,7 +4030,11 @@ impl YueJieRustApp {
     ) {
         let root = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Length(7), Constraint::Min(7)])
+            .constraints([
+                Constraint::Length(7),
+                Constraint::Length(7),
+                Constraint::Min(7),
+            ])
             .split(area);
 
         let current = &practice.question_set.questions[practice.selected_question];
@@ -4002,12 +4138,7 @@ impl YueJieRustApp {
         frame.render_stateful_widget(
             List::new(items)
                 .block(simple_block(title, palette))
-                .highlight_style(
-                    Style::default()
-                        .fg(palette.highlight_text)
-                        .bg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                .highlight_style(interactive_selected_style(palette)),
             area,
             &mut state,
         );
@@ -4037,12 +4168,9 @@ impl YueJieRustApp {
         action: Action,
     ) {
         let style = if selected {
-            Style::default()
-                .fg(palette.highlight_text)
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
+            interactive_selected_style(palette)
         } else {
-            Style::default().fg(palette.text).bg(palette.panel)
+            interactive_idle_style(palette)
         };
         frame.render_widget(
             Paragraph::new(label.to_string())
@@ -4051,11 +4179,7 @@ impl YueJieRustApp {
                 .block(
                     Block::default()
                         .borders(Borders::LEFT | Borders::RIGHT)
-                        .border_style(Style::default().fg(if selected {
-                            palette.accent
-                        } else {
-                            palette.border
-                        }))
+                        .border_style(interactive_border_style(palette, selected))
                         .style(style),
                 ),
             area,
@@ -4151,22 +4275,25 @@ impl YueJieRustApp {
                 action_type.section_label(),
                 action_type.recommended_time()
             ))
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(palette.muted)),
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(palette.muted)),
             chunks[0],
         );
         frame.render_widget(
             Paragraph::new(format!("{:.1}%", card.recent_accuracy_percent))
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
+                .alignment(Alignment::Center)
+                .style(
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
             chunks[1],
         );
         frame.render_widget(
-            Paragraph::new(format!("{} 次 | 平均 {}", card.attempt_count, card.recent_duration_text))
+            Paragraph::new(format!(
+                "{} 次 | 平均 {}",
+                card.attempt_count, card.recent_duration_text
+            ))
             .alignment(Alignment::Center)
             .style(Style::default().fg(palette.muted)),
             chunks[2],
@@ -4226,16 +4353,16 @@ impl YueJieRustApp {
         action: Action,
     ) {
         let style = if selected {
-            Style::default()
-                .fg(palette.highlight_text)
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
+            interactive_selected_style(palette)
         } else {
-            Style::default().fg(palette.text).bg(palette.panel)
+            interactive_idle_style(palette)
         };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(Span::styled(title.to_string(), Style::default().add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled(
+                    title.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
                 Line::from(subtitle.to_string()),
             ]))
             .alignment(Alignment::Center)
@@ -4245,11 +4372,7 @@ impl YueJieRustApp {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(if selected {
-                        Style::default().fg(palette.accent)
-                    } else {
-                        Style::default().fg(palette.border)
-                    })
+                    .border_style(interactive_border_style(palette, selected))
                     .style(style),
             ),
             area,
@@ -4267,21 +4390,14 @@ impl YueJieRustApp {
         action: Action,
     ) {
         let style = if selected {
-            Style::default()
-                .fg(palette.highlight_text)
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
+            interactive_selected_style(palette)
         } else {
-            Style::default().fg(palette.text).bg(palette.panel)
+            interactive_idle_style(palette)
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(if selected {
-                Style::default().fg(palette.accent)
-            } else {
-                Style::default().fg(palette.border)
-            })
+            .border_style(interactive_border_style(palette, selected))
             .style(style);
         let text = Paragraph::new(label.to_string())
             .alignment(Alignment::Center)
@@ -4302,9 +4418,9 @@ impl YueJieRustApp {
         action: Action,
     ) {
         let style = if selected {
-            Style::default().fg(palette.highlight_text).bg(palette.accent)
+            interactive_selected_style(palette)
         } else {
-            Style::default().fg(palette.text).bg(palette.panel)
+            interactive_idle_style(palette)
         };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
@@ -4320,11 +4436,7 @@ impl YueJieRustApp {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(if selected {
-                        Style::default().fg(palette.accent)
-                    } else {
-                        Style::default().fg(palette.border)
-                    })
+                    .border_style(interactive_border_style(palette, selected))
                     .style(style),
             ),
             area,
@@ -4356,10 +4468,7 @@ impl YueJieRustApp {
         );
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(format!(
-                    "当前尺寸：{} x {}",
-                    area.width, area.height
-                )),
+                Line::from(format!("当前尺寸：{} x {}", area.width, area.height)),
                 Line::from(format!(
                     "推荐至少：{} x {}",
                     MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT
@@ -4407,9 +4516,14 @@ struct Palette {
 impl Palette {
     fn new(theme_mode: &str, background_mode: &str, palette_mode: &str) -> Self {
         let transparent = background_mode == "transparent";
+        let transparent_panels = transparent && theme_mode == "dark";
         match (theme_mode, palette_mode) {
             ("light", "ink") => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(243, 246, 248) },
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(243, 246, 248)
+                },
                 panel: Color::Rgb(250, 252, 253),
                 panel_alt: Color::Rgb(235, 241, 245),
                 accent: Color::Rgb(53, 108, 150),
@@ -4421,7 +4535,11 @@ impl Palette {
                 border: Color::Rgb(191, 204, 214),
             },
             ("light", "amber") => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(247, 243, 236) },
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(247, 243, 236)
+                },
                 panel: Color::Rgb(252, 249, 244),
                 panel_alt: Color::Rgb(242, 235, 225),
                 accent: Color::Rgb(138, 98, 34),
@@ -4433,7 +4551,11 @@ impl Palette {
                 border: Color::Rgb(210, 196, 176),
             },
             ("light", "rose") => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(247, 241, 241) },
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(247, 241, 241)
+                },
                 panel: Color::Rgb(252, 248, 248),
                 panel_alt: Color::Rgb(241, 232, 233),
                 accent: Color::Rgb(144, 85, 96),
@@ -4445,7 +4567,11 @@ impl Palette {
                 border: Color::Rgb(214, 193, 197),
             },
             ("light", _) => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(243, 246, 242) },
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(243, 246, 242)
+                },
                 panel: Color::Rgb(251, 252, 249),
                 panel_alt: Color::Rgb(235, 241, 236),
                 accent: Color::Rgb(49, 122, 104),
@@ -4457,9 +4583,21 @@ impl Palette {
                 border: Color::Rgb(190, 203, 195),
             },
             ("dark", "ink") => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(12, 18, 24) },
-                panel: Color::Rgb(21, 31, 39),
-                panel_alt: Color::Rgb(28, 40, 49),
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(12, 18, 24)
+                },
+                panel: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(21, 31, 39)
+                },
+                panel_alt: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(28, 40, 49)
+                },
                 accent: Color::Rgb(122, 184, 228),
                 highlight_text: Color::Rgb(10, 18, 24),
                 text: Color::Rgb(232, 239, 243),
@@ -4469,9 +4607,21 @@ impl Palette {
                 border: Color::Rgb(68, 88, 101),
             },
             ("dark", "amber") => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(20, 16, 12) },
-                panel: Color::Rgb(31, 25, 20),
-                panel_alt: Color::Rgb(40, 32, 26),
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(20, 16, 12)
+                },
+                panel: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(31, 25, 20)
+                },
+                panel_alt: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(40, 32, 26)
+                },
                 accent: Color::Rgb(224, 182, 96),
                 highlight_text: Color::Rgb(24, 16, 10),
                 text: Color::Rgb(242, 236, 226),
@@ -4481,9 +4631,21 @@ impl Palette {
                 border: Color::Rgb(95, 80, 64),
             },
             ("dark", "rose") => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(21, 14, 17) },
-                panel: Color::Rgb(33, 23, 27),
-                panel_alt: Color::Rgb(43, 30, 35),
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(21, 14, 17)
+                },
+                panel: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(33, 23, 27)
+                },
+                panel_alt: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(43, 30, 35)
+                },
                 accent: Color::Rgb(220, 156, 166),
                 highlight_text: Color::Rgb(27, 16, 20),
                 text: Color::Rgb(243, 234, 236),
@@ -4493,9 +4655,21 @@ impl Palette {
                 border: Color::Rgb(96, 73, 79),
             },
             _ => Self {
-                background: if transparent { Color::Reset } else { Color::Rgb(14, 20, 19) },
-                panel: Color::Rgb(24, 33, 31),
-                panel_alt: Color::Rgb(31, 42, 39),
+                background: if transparent {
+                    Color::Reset
+                } else {
+                    Color::Rgb(14, 20, 19)
+                },
+                panel: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(24, 33, 31)
+                },
+                panel_alt: if transparent_panels {
+                    Color::Reset
+                } else {
+                    Color::Rgb(31, 42, 39)
+                },
                 accent: Color::Rgb(134, 208, 182),
                 highlight_text: Color::Rgb(10, 18, 16),
                 text: Color::Rgb(234, 240, 236),
@@ -4529,6 +4703,37 @@ fn title_style(palette: Palette) -> Style {
     Style::default()
         .fg(palette.accent)
         .add_modifier(Modifier::BOLD)
+}
+
+fn glass_mode(palette: Palette) -> bool {
+    matches!(palette.panel, Color::Reset) && matches!(palette.background, Color::Reset)
+}
+
+fn interactive_idle_style(palette: Palette) -> Style {
+    Style::default().fg(palette.text).bg(palette.panel)
+}
+
+fn interactive_selected_style(palette: Palette) -> Style {
+    if glass_mode(palette) {
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(palette.highlight_text)
+            .bg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+fn interactive_border_style(palette: Palette, selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border)
+    }
 }
 
 fn palette_mode_label(mode: &str) -> &'static str {
@@ -4850,7 +5055,7 @@ fn timer_glyphs() -> HashMap<char, [&'static str; 5]> {
         ('1', [" ╷ ", " │ ", " │ ", " │ ", " ╵ "]),
         ('2', ["╭─╮", "  │", "╭─╯", "│  ", "╰─╯"]),
         ('3', ["╭─╮", "  │", " ─┤", "  │", "╰─╯"]),
-        ('4', ["│ │", "│ │", "╰─┤", "  │", "  │"]),
+        ('4', ["   ", "│ │", "├─┤", "  │", "  ╵"]),
         ('5', ["╭─╮", "│  ", "╰─╮", "  │", "╰─╯"]),
         ('6', ["╭─╮", "│  ", "├─╮", "│ │", "╰─╯"]),
         ('7', ["╶─╮", "  │", "  │", "  │", "  ╵"]),
@@ -4869,8 +5074,14 @@ mod tests {
     fn format_question_label_handles_slots() {
         assert_eq!(format_question_label("banked_cloze", None), "选词填空");
         assert_eq!(format_question_label("long_reading", None), "长篇阅读");
-        assert_eq!(format_question_label("careful_reading", Some(1)), "仔细阅读 1");
-        assert_eq!(format_question_label("careful_reading", Some(2)), "仔细阅读 2");
+        assert_eq!(
+            format_question_label("careful_reading", Some(1)),
+            "仔细阅读 1"
+        );
+        assert_eq!(
+            format_question_label("careful_reading", Some(2)),
+            "仔细阅读 2"
+        );
     }
 
     #[test]
@@ -4901,8 +5112,14 @@ mod tests {
 
     #[test]
     fn question_group_labels_match_expected_sections() {
-        assert_eq!(format_question_group_label("banked_cloze", None), "Section A");
-        assert_eq!(format_question_group_label("long_reading", None), "Section B");
+        assert_eq!(
+            format_question_group_label("banked_cloze", None),
+            "Section A"
+        );
+        assert_eq!(
+            format_question_group_label("long_reading", None),
+            "Section B"
+        );
         assert_eq!(
             format_question_group_label("careful_reading", Some(2)),
             "Section C-2"
@@ -4927,6 +5144,9 @@ mod tests {
     #[test]
     fn wrapped_block_height_clamps_expected_range() {
         assert_eq!(wrapped_block_height("short", 20, 2, 4), 2);
-        assert_eq!(wrapped_block_height("a very long option that should wrap", 8, 2, 4), 4);
+        assert_eq!(
+            wrapped_block_height("a very long option that should wrap", 8, 2, 4),
+            4
+        );
     }
 }
