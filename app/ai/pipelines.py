@@ -260,9 +260,10 @@ class QuestionGenerationPipeline:
             return (
                 f"CET writing task. Write an English essay of at least {min_words} words but no more than {max_words} words. "
                 f"{style_hint} "
-                "Provide an exam-style task prompt in English, 2-3 short instruction lines, a high-scoring sample essay, and rubric focus tags. "
+                "Provide an exam-style task prompt in English, 1-2 short content lines, a high-scoring sample essay, and rubric focus tags. "
                 "For CET4, prefer prompts that look like a short campus/social situation, a survey request, or a practical opinion-writing task. "
                 "For CET6, prefer prompts that look like a quoted statement, a concise social observation, or a viewpoint to comment on. "
+                "Keep the visible content prompt brief, like real CET tasks, rather than expanding it into a long teacher-style explanation. "
                 "Do not use explicit numbered outlines such as 1., 2., 3. in the prompt lines. "
                 "Do not turn the prompt into a detailed scaffold with sub-questions; keep it compact like real CET writing tasks. "
                 "No objective questions, options, or answer_key should be included."
@@ -368,6 +369,7 @@ class QuestionGenerationPipeline:
             "- For writing, produce a CET-style prompt format such as a short situational instruction, a survey/opinion task, a quoted statement, or a sentence-led argumentative task as appropriate to the level.\n"
             "- For CET4 writing, the prompt should look closer to practical campus/social essay instructions than to abstract philosophical debate.\n"
             "- For CET6 writing, the prompt should look closer to a short statement/comment/opinion task than to a basic school composition title.\n"
+            "- The visible content prompt should normally be 1 or 2 short lines only.\n"
             "- Do not use explicit numbered outlines like 1., 2., 3. or detailed multi-point Chinese-style writing hints in the prompt lines.\n"
             "- Keep writing prompts compact. Avoid multi-step scaffolds or teacher-style classroom instructions.\n"
             "- For translation, provide a Chinese source passage on Chinese culture, history, society, development, education, ecology, or technology as appropriate to the level.\n"
@@ -709,7 +711,13 @@ class QuestionGenerationPipeline:
             line = re.sub(r"^\s*\d+\s*[\.\):\-]\s*", "", paragraph).strip()
             if line:
                 cleaned.append(line)
-        return cleaned[:3]
+        if not cleaned:
+            return normalized
+        if len(cleaned) == 1:
+            return cleaned
+        normalized.append(cleaned[0])
+        normalized.append(" ".join(cleaned[1:]).strip())
+        return normalized[:2]
 
     @staticmethod
     def _normalize_writing_task_prompt(raw: Any, title: str, level: Level) -> str:

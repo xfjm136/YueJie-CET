@@ -226,6 +226,38 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(normalized["passage"]["paragraphs"][0], "A. first paragraph")
         self.assertEqual(normalized["passage"]["paragraphs"][1], "B. second paragraph without label")
 
+    def test_postprocess_compacts_writing_prompt_lines(self) -> None:
+        payload = {
+            "title": "Demo Writing",
+            "topic": "teamwork",
+            "task_prompt": "Write about teamwork.",
+            "reference_answer": "This is a sample essay with enough words to pass the length requirement. " * 4,
+            "rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"],
+            "min_response_words": 120,
+            "max_response_words": 180,
+            "shared_options": [],
+            "passage": {
+                "title": "Demo Writing",
+                "paragraphs": [
+                    "1. Suppose your class is doing a group project.",
+                    "2. Write an essay on the importance of teamwork.",
+                    "3. You may include examples from study and daily life.",
+                ],
+            },
+            "questions": [],
+            "answer_key": [],
+            "analysis": {"item_explanations": [], "test_tips": []},
+            "vocabulary": [],
+        }
+        normalized = self.pipeline._postprocess_payload(
+            payload,
+            Level.CET4,
+            QuestionType.WRITING,
+            None,
+        )
+        self.assertEqual(len(normalized["passage"]["paragraphs"]), 2)
+        self.assertFalse(normalized["passage"]["paragraphs"][0].startswith("1."))
+
 
 if __name__ == "__main__":
     unittest.main()
