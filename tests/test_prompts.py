@@ -124,6 +124,9 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(blueprint["vocabulary_target_count"], 5)
         self.assertTrue(any("inference" in item for item in blueprint["skill_focus"]))
         self.assertIn("推理判断不稳定", blueprint["weakness_focus"])
+        self.assertIn("technology-reflection", blueprint["exam_profile"])
+        self.assertTrue(blueprint["prompt_style_anchors"])
+        self.assertTrue(blueprint["authenticity_guardrails"])
 
     def test_careful_reading_blueprints_differ_by_slot_and_level(self) -> None:
         cet4_slot1 = self.pipeline._build_blueprint(
@@ -156,6 +159,32 @@ class PromptTests(unittest.TestCase):
         self.assertIn("reflective or critical", cet6_slot2["register"])
         self.assertIn("original English materials", cet4_slot1["source_material_hint"])
         self.assertIn("opinion piece", cet6_slot2["source_material_hint"])
+        self.assertIn("research", cet4_slot1["exam_profile"])
+        self.assertIn("social", cet4_slot2["exam_profile"])
+        self.assertIn("market", cet6_slot1["exam_profile"])
+        self.assertIn("psychology", cet6_slot2["exam_profile"])
+        self.assertTrue(any("purpose" in item.lower() or "study" in item.lower() for item in cet4_slot1["prompt_style_anchors"]))
+        self.assertTrue(any("attitude" in item.lower() or "infer" in item.lower() for item in cet6_slot2["prompt_style_anchors"]))
+
+    def test_blueprint_avoids_recent_topic_keyword_repetition(self) -> None:
+        blueprint = self.pipeline._build_blueprint(
+            Level.CET4,
+            QuestionType.CAREFUL_READING,
+            2,
+            None,
+            recent_topics=[
+                "second-hand shopping among young consumers",
+                "young people's digital behavior and attention",
+                "changing consumer preferences among students",
+            ],
+        )
+        self.assertIn("recent themes", blueprint["novelty_requirement"])
+        self.assertTrue(blueprint["avoid_theme_keywords"])
+        self.assertNotIn(blueprint["topic"], {
+            "second-hand shopping among young consumers",
+            "young people's digital behavior and attention",
+            "changing consumer preferences among students",
+        })
 
     def test_writing_and_translation_blueprints_keep_cet_style_hints(self) -> None:
         writing = self.pipeline._build_blueprint(
@@ -172,6 +201,42 @@ class PromptTests(unittest.TestCase):
         )
         self.assertIn("official exam instructions", writing["writing_mode"])
         self.assertIn("Chinese culture", translation["translation_domain"])
+
+    def test_generation_prompt_mentions_exam_profile_and_novelty_rules(self) -> None:
+        prompt = self.pipeline._generation_user_prompt(
+            Level.CET6,
+            QuestionType.CAREFUL_READING,
+            1,
+            {
+                "topic": "pricing strategy and market competition",
+                "genre": "expository",
+                "register": "business",
+                "source_material_hint": "adapted business report",
+                "exam_profile": "CET6 careful reading passage one: fact-driven business, economics, workplace, or market-report article.",
+                "passage_flow": ["market background", "strategy", "consequence"],
+                "prompt_style_anchors": ["What is the underlying motive behind ...?"],
+                "authenticity_guardrails": ["do not sound like a coaching handout"],
+                "writing_prompt_examples": [],
+                "target_word_count": 425,
+                "word_count_guidance": "Keep the passage paragraphs between 400 and 450 words.",
+                "skill_focus": ["market finding or consequence interpretation"],
+                "difficulty_controls": ["distractors must be plausible"],
+                "structure_plan": ["5 four-option questions"],
+                "option_strategy": ["distractors should reflect confusion among business motive and consequence"],
+                "writing_mode": "",
+                "translation_domain": "",
+                "weakness_focus": "none",
+                "question_id_pattern": "q1 to q5",
+                "vocabulary_target_count": 5,
+                "analysis_style": "Chinese only",
+                "anti_repeat_topics": ["platform expansion and local business pressure"],
+                "avoid_theme_keywords": ["platform", "business"],
+                "novelty_requirement": "Avoid recycling recent themes from other recently generated sets.",
+            },
+        )
+        self.assertIn("blueprint.exam_profile", prompt)
+        self.assertIn("prompt_style_anchors", prompt)
+        self.assertIn("Novelty rule", prompt)
 
     def test_postprocess_normalizes_careful_reading_options_and_skill_tags(self) -> None:
         payload = {

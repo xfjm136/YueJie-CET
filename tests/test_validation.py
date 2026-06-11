@@ -416,6 +416,66 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(QuestionSetValidationError):
             self.validator.validate(payload, Level.CET6, QuestionType.LONG_READING, None)
 
+    def test_long_reading_rejects_meta_statement_style(self) -> None:
+        payload = {
+            "title": "Public Libraries and Community Learning",
+            "topic": "community learning",
+            "shared_options": [],
+            "passage": {
+                "title": "Public Libraries and Community Learning",
+                "paragraphs": [
+                    "A. Public libraries have expanded beyond book lending and now serve as study spaces, event venues, and community information centers.",
+                    "B. One reason for this change is that libraries can respond to local needs more flexibly than many formal institutions.",
+                    "C. In some cities, staff members design workshops for job seekers, language learners, and parents with young children.",
+                    "D. These programs work best when they are tied to the actual routines and concerns of neighborhood residents.",
+                    "E. Librarians therefore collect feedback not only about reading preferences but also about preferred schedules and service formats.",
+                    "F. Digital tools have made many services easier to access, especially for users who cannot visit the building often.",
+                    "G. Yet experts warn that online services should support rather than replace face-to-face help for complex needs.",
+                    "H. This is particularly true for older users, who may need patient guidance before they feel confident using new systems.",
+                    "I. Many libraries also cooperate with schools, museums, and volunteer groups to broaden their educational role.",
+                    "J. Such partnerships can help libraries reach people who might not visit on their own.",
+                    "K. In the end, a successful library is judged not only by its collection but also by how effectively it supports everyday learning.",
+                ],
+            },
+            "questions": [
+                {"id": "q1", "prompt": "The passage says libraries now serve more than one purpose.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q2", "prompt": "The passage says libraries can adapt to local needs.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q3", "prompt": "The passage says some workshops target different community groups.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q4", "prompt": "The passage says neighborhood needs matter for program design.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q5", "prompt": "The passage says librarians ask users for service feedback.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q6", "prompt": "The passage says digital tools improve access.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q7", "prompt": "The passage says online help cannot replace all in-person support.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q8", "prompt": "The passage says older users may need guidance.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q9", "prompt": "The passage says libraries work with other institutions.", "options": [], "skill_tag": "matching", "hint": None},
+                {"id": "q10", "prompt": "The passage says library success depends on support for learning.", "options": [], "skill_tag": "matching", "hint": None},
+            ],
+            "answer_key": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "K"],
+            "analysis": {
+                "overall_strategy": "先看题干信息点，再做段落定位。",
+                "overall_summary": "文章讨论公共图书馆的社区学习功能。",
+                "item_explanations": [
+                    {"question_id": "q1", "correct_answer": "A", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q2", "correct_answer": "B", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q3", "correct_answer": "C", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q4", "correct_answer": "D", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q5", "correct_answer": "E", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q6", "correct_answer": "F", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q7", "correct_answer": "G", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q8", "correct_answer": "H", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q9", "correct_answer": "I", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                    {"question_id": "q10", "correct_answer": "K", "explanation": "对应原文信息。", "skill_tag": "matching"},
+                ],
+                "test_tips": ["先扫题干", "再回文定位", "关注同义改写"],
+            },
+            "vocabulary": [
+                {"lemma": "flexibly", "surface_form": "flexibly", "level_hint": "cet4", "meaning_zh": "灵活地", "example_en": ""},
+                {"lemma": "partnership", "surface_form": "partnerships", "level_hint": "cet4", "meaning_zh": "合作关系", "example_en": ""},
+                {"lemma": "venue", "surface_form": "venue", "level_hint": "cet4", "meaning_zh": "场所", "example_en": ""},
+            ],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET4, QuestionType.LONG_READING, None)
+
     def test_writing_payload_passes_validation(self) -> None:
         payload = {
             "title": "Writing Task",

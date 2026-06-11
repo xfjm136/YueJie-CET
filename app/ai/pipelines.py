@@ -177,16 +177,22 @@ class QuestionGenerationPipeline:
         recent_topics: list[str] | None = None,
     ) -> dict[str, Any]:
         anti_repeat_topics = self._anti_repeat_topics(recent_topics)
-        topic_pool = [
-            item
-            for item in self._topic_pool(level, question_type, slot)
-            if item not in anti_repeat_topics
-        ] or self._topic_pool(level, question_type, slot)
+        avoid_theme_keywords = self._avoid_theme_keywords(recent_topics)
+        raw_topic_pool = self._topic_pool(level, question_type, slot)
+        topic_pool = self._fresh_topic_pool(
+            raw_topic_pool,
+            anti_repeat_topics,
+            avoid_theme_keywords,
+        ) or raw_topic_pool
         return {
             "topic": secrets_choice(topic_pool),
             "genre": self._genre_for(level, question_type, slot),
             "register": self._register_for(level, question_type, slot),
             "source_material_hint": self._source_material_hint(level, question_type, slot),
+            "exam_profile": self._exam_profile(level, question_type, slot),
+            "passage_flow": self._passage_flow(level, question_type, slot),
+            "prompt_style_anchors": self._prompt_style_anchors(level, question_type, slot),
+            "authenticity_guardrails": self._authenticity_guardrails(level, question_type, slot),
             "writing_prompt_examples": self._writing_prompt_examples(level, question_type),
             "target_word_count": self._target_word_count(level, question_type),
             "word_count_guidance": self._strict_word_count_guidance(level, question_type),
@@ -201,6 +207,13 @@ class QuestionGenerationPipeline:
             "vocabulary_target_count": self._vocabulary_target_count(question_type),
             "analysis_style": "Chinese only, concise, evidence-based, and useful for CET review.",
             "anti_repeat_topics": anti_repeat_topics,
+            "avoid_theme_keywords": avoid_theme_keywords,
+            "novelty_requirement": self._novelty_requirement(
+                recent_topics,
+                avoid_theme_keywords,
+                question_type,
+                slot,
+            ),
         }
 
     @staticmethod
@@ -231,6 +244,85 @@ class QuestionGenerationPipeline:
             return []
         return [item.strip().lower() for item in recent_topics if item.strip()]
 
+    @classmethod
+    def _fresh_topic_pool(
+        cls,
+        topic_pool: list[str],
+        anti_repeat_topics: list[str],
+        avoid_theme_keywords: list[str],
+    ) -> list[str]:
+        blocked_topics = set(anti_repeat_topics)
+        blocked_keywords = set(avoid_theme_keywords)
+        fresh_topics = []
+        for topic in topic_pool:
+            normalized = topic.strip().lower()
+            if normalized in blocked_topics:
+                continue
+            if blocked_keywords and len(cls._topic_keywords(normalized) & blocked_keywords) >= 2:
+                continue
+            fresh_topics.append(topic)
+        return fresh_topics
+
+    @staticmethod
+    def _topic_keywords(text: str) -> set[str]:
+        stopwords = {
+            "about",
+            "among",
+            "around",
+            "daily",
+            "from",
+            "into",
+            "life",
+            "people",
+            "public",
+            "social",
+            "student",
+            "students",
+            "their",
+            "through",
+            "with",
+            "young",
+        }
+        return {
+            word
+            for word in re.findall(r"[a-z]+", text.lower())
+            if len(word) >= 4 and word not in stopwords
+        }
+
+    @classmethod
+    def _avoid_theme_keywords(cls, recent_topics: list[str] | None) -> list[str]:
+        if not recent_topics:
+            return []
+        keyword_counts: dict[str, int] = {}
+        for topic in recent_topics:
+            for keyword in cls._topic_keywords(topic):
+                keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
+        ordered = sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))
+        return [keyword for keyword, _count in ordered[:12]]
+
+    @staticmethod
+    def _novelty_requirement(
+        recent_topics: list[str] | None,
+        avoid_theme_keywords: list[str],
+        question_type: QuestionType,
+        slot: int | None,
+    ) -> str:
+        if not recent_topics:
+            return (
+                "No recent-topic lock is active, but still avoid textbook-like recycling or lightly renamed repeats."
+            )
+        recent_preview = ", ".join(recent_topics[:4])
+        keyword_preview = ", ".join(avoid_theme_keywords[:6]) or "none"
+        type_hint = (
+            "the other careful-reading passage in the same paper"
+            if question_type is QuestionType.CAREFUL_READING and slot in {1, 2}
+            else "other recently generated sets"
+        )
+        return (
+            f"Avoid recycling recent themes from {type_hint}: {recent_preview}. "
+            f"If related keywords appear again ({keyword_preview}), shift to a clearly different scene, source angle, and paragraph logic rather than merely renaming the same topic."
+        )
+
     @staticmethod
     def _question_spec(level: Level, question_type: QuestionType, slot: int | None) -> str:
         if question_type is QuestionType.BANKED_CLOZE:
@@ -240,14 +332,16 @@ class QuestionGenerationPipeline:
                 "Provide exactly 15 shared options labeled A. to O. "
                 "Each shared option must be one English word only, not a phrase or clause. "
                 "Targets and distractors should be CET-like in part of speech and collocation difficulty. "
-                "Each of the 10 answers must use a different letter; no option may be reused."
+                "Each of the 10 answers must use a different letter; no option may be reused. "
+                "The passage should read like one adapted English article rather than a coaching handout or list of advice."
             )
         if question_type is QuestionType.LONG_READING:
             word_spec = "CET4 850-1150 words; CET6 1050-1350 words."
             return (
                 f"{word_spec} Provide exactly 10 statements for paragraph matching. "
                 "Paragraphs must be labeled A., B., C. ... with 10-14 total paragraphs, and at least one paragraph should be redundant or one paragraph may answer more than one item. "
-                "Each matching item must be an English statement, not a question, and must not include paragraph labels."
+                "Each matching item must be an English statement, not a question, and must not include paragraph labels. "
+                "The long passage should have clear article logic and paragraph functions rather than reading like disconnected mini-paragraphs."
             )
         if question_type is QuestionType.WRITING:
             min_words = 120 if level is Level.CET4 else 150
@@ -345,6 +439,7 @@ class QuestionGenerationPipeline:
             f"{retry_note}"
             f"Mandatory spec:\n{self._question_spec(level, question_type, slot)}\n"
             "Output rules:\n"
+            "- Treat blueprint.exam_profile, blueprint.passage_flow, blueprint.prompt_style_anchors, and blueprint.authenticity_guardrails as hard style targets rather than optional inspiration.\n"
             "- Keep the passage natural and exam-like.\n"
             "- Keep the style close to CET source materials such as news features, opinion pieces, science explanations, educational commentary, lecture-derived exposition, or general academic reading.\n"
             "- Objective passages should feel like adapted original English materials, not like a student's essay, chat response, diary entry, marketing copy, or story opening.\n"
@@ -363,10 +458,13 @@ class QuestionGenerationPipeline:
             "- For banked cloze, the 15 options must be shared options only, not repeated per blank.\n"
             "- For banked cloze, every shared option must be exactly one English word, not a phrase.\n"
             "- For banked cloze, each answer letter may be used only once.\n"
+            "- For banked cloze, the passage should read like one adapted article with local cohesive clues, not like ten disconnected vocabulary exercise sentences.\n"
             "- For long reading, statements must be paraphrases, not direct copies of paragraph openings.\n"
             "- For long reading, every item prompt must be a statement rather than a question and must not include A./B./C. labels.\n"
+            "- For long reading, most statements should be compact information-bearing claims rather than 'The passage says ...' summaries.\n"
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
+            "- For careful reading, stems should reflect the designated passage type: fact-driven passages favor study/report/process/result wording, while viewpoint-driven passages favor reason/infer/purpose/attitude wording.\n"
             "- For writing, produce a CET-style prompt format such as a short situational instruction, a survey/opinion task, a quoted statement, or a sentence-led argumentative task as appropriate to the level.\n"
             "- For CET4 writing, the prompt should look closer to official exam wording such as 'Suppose ... You are now to write ...' than to abstract philosophical debate.\n"
             "- For CET6 writing, the prompt should often look like an official sentence-led task built around a quoted sentence, followed by very brief guidance.\n"
@@ -375,6 +473,7 @@ class QuestionGenerationPipeline:
             "- Keep writing prompts compact. Avoid multi-step scaffolds or teacher-style classroom instructions.\n"
             "- For translation, provide a Chinese source passage on Chinese culture, history, society, development, education, ecology, or technology as appropriate to the level.\n"
             "- Do not write in a dramatic, fictional, or conversational blog style.\n"
+            "- Novelty rule: do not lightly rename a recent topic; if a nearby topic reappears, change the source angle, scenario, and paragraph logic enough to feel like a different authentic passage.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
             f"Question-type details:\n{self._question_type_details(question_type, level, slot)}\n"
             "Return one JSON object using exactly this schema shape and no extra top-level keys:\n"
@@ -412,7 +511,8 @@ class QuestionGenerationPipeline:
             "Original JSON:\n"
             f"{json.dumps(payload, ensure_ascii=False)}\n"
             "Return a corrected full JSON object only. Preserve valid content and change only what is needed. "
-            "If a word-count error is listed, expand or trim the passage itself until it is inside the required range while keeping the passage coherent."
+            "If a word-count error is listed, expand or trim the passage itself until it is inside the required range while keeping the passage coherent. "
+            "During repair, keep the final set aligned with blueprint.exam_profile, blueprint.passage_flow, blueprint.prompt_style_anchors, and blueprint.authenticity_guardrails."
         )
 
     def _repair_until_valid(
@@ -1434,6 +1534,203 @@ class QuestionGenerationPipeline:
         )
 
     @staticmethod
+    def _exam_profile(level: Level, question_type: QuestionType, slot: int | None) -> str:
+        if question_type is QuestionType.BANKED_CLOZE:
+            return (
+                "Section A word-bank passage adapted from a familiar CET4-style explainer, campus-public-life feature, or accessible social commentary."
+                if level is Level.CET4
+                else "Section A word-bank passage adapted from a denser CET6-style commentary, public-interest feature, or mildly academic explainer."
+            )
+        if question_type is QuestionType.LONG_READING:
+            return (
+                "Section B paragraph-matching article with clear paragraph roles, readable information density, and statement-level paraphrase."
+                if level is Level.CET4
+                else "Section B paragraph-matching article with denser claim-evidence logic, wider paraphrase distance, and stronger section-level organization."
+            )
+        if question_type is QuestionType.WRITING:
+            return (
+                "CET4 writing prompt in official instruction style."
+                if level is Level.CET4
+                else "CET6 writing prompt in official sentence-led or statement-led instruction style."
+            )
+        if question_type is QuestionType.TRANSLATION:
+            return "CET translation prompt with one Chinese source paragraph."
+        if level is Level.CET4 and slot == 1:
+            return (
+                "CET4 careful reading passage one: fact-driven research, health, medicine, experiment, or science-popularization article."
+            )
+        if level is Level.CET4 and slot == 2:
+            return (
+                "CET4 careful reading passage two: viewpoint-driven social, campus, youth-consumer, or everyday-psychology commentary."
+            )
+        if level is Level.CET6 and slot == 1:
+            return (
+                "CET6 careful reading passage one: fact-driven business, economics, workplace, or market-report article."
+            )
+        return (
+            "CET6 careful reading passage two: viewpoint-driven psychology, ethics, technology-reflection, or social-critique article."
+        )
+
+    @staticmethod
+    def _passage_flow(level: Level, question_type: QuestionType, slot: int | None) -> list[str]:
+        if question_type is QuestionType.BANKED_CLOZE:
+            return (
+                [
+                    "open with a concrete issue or observation",
+                    "develop the explanation with examples, causes, or consequences",
+                    "close with implication, contrast, or practical takeaway without sounding like a tips list",
+                ]
+                if level is Level.CET4
+                else [
+                    "open with a claim, problem, or social observation",
+                    "develop it through explanation, comparison, or institutional logic",
+                    "close with implication or qualification rather than a motivational summary",
+                ]
+            )
+        if question_type is QuestionType.LONG_READING:
+            return (
+                [
+                    "lead paragraph introduces the issue or service context",
+                    "middle paragraphs split into clear functions such as example, problem, response, comparison, or recommendation",
+                    "later paragraphs synthesize lessons or practical implications",
+                ]
+                if level is Level.CET4
+                else [
+                    "lead paragraph frames a public-interest or institutional issue",
+                    "middle paragraphs separate claims, cases, data points, objections, or policy responses",
+                    "later paragraphs draw out implication, limitation, or broader consequence",
+                ]
+            )
+        if question_type is QuestionType.CAREFUL_READING and slot == 1:
+            return (
+                [
+                    "background or research question",
+                    "method, groups, variable, or procedure details",
+                    "findings and evidence",
+                    "brief implication or conclusion",
+                ]
+                if level is Level.CET4
+                else [
+                    "market background or business situation",
+                    "strategy, motive, comparison, or institutional move",
+                    "report findings, consequences, or business evidence",
+                    "limited implication grounded in the evidence",
+                ]
+            )
+        if question_type is QuestionType.CAREFUL_READING and slot == 2:
+            return (
+                [
+                    "introduce a trend, habit, or social phenomenon",
+                    "analyze reasons, reactions, or examples",
+                    "surface the author's suggestion, judgment, or implied view",
+                ]
+                if level is Level.CET4
+                else [
+                    "introduce a common belief, modern problem, or cultural tension",
+                    "critique it through reasoning plus one or more examples or citations",
+                    "end with implied stance, warning, or broader reflection",
+                ]
+            )
+        return []
+
+    @staticmethod
+    def _prompt_style_anchors(level: Level, question_type: QuestionType, slot: int | None) -> list[str]:
+        if question_type is QuestionType.BANKED_CLOZE:
+            return [
+                "blanks should rely on sentence grammar plus discourse logic, not isolated synonym guessing",
+                "shared options should create real part-of-speech and collocation competition",
+                "the passage should still read like an adapted article, not like ten separate sentence exercises",
+            ]
+        if question_type is QuestionType.LONG_READING:
+            return (
+                [
+                    "statements may target an example, warning, practical suggestion, paragraph function, or contrast",
+                    "compact statements such as 'One common mistake is to ...' or 'Some beginners benefit from ...' are more natural than 'The passage says ...'",
+                    "items should feel like official matching statements rather than wh-questions rewritten as fragments",
+                ]
+                if level is Level.CET4
+                else [
+                    "statements may target a claim, evidence chain, institutional response, contrast, limitation, or policy implication",
+                    "compact statements such as 'Local firms suffer when ...' or 'One reported advantage lies in ...' are more natural than 'The article tells us ...'",
+                    "items should read like dense information prompts rather than generic summary lines",
+                ]
+            )
+        if question_type is QuestionType.CAREFUL_READING and level is Level.CET4 and slot == 1:
+            return [
+                "What was the primary purpose of the study or experiment?",
+                "How did one group of participants differ from another?",
+                "What did the researchers find about ...?",
+                "The word or phrase ... most nearly means ____.",
+                "What can be inferred from the results?",
+            ]
+        if question_type is QuestionType.CAREFUL_READING and level is Level.CET4 and slot == 2:
+            return [
+                "What contributes to the growing popularity of ...?",
+                "How do certain groups react to this trend?",
+                "Why does the author mention ...?",
+                "What does the author suggest ... do?",
+                "What can be inferred about ...?",
+            ]
+        if question_type is QuestionType.CAREFUL_READING and level is Level.CET6 and slot == 1:
+            return [
+                "What is the underlying motive behind ...?",
+                "What consequence did ... bring to ...?",
+                "In what way is ... superior to ... according to the passage?",
+                "What does the report indicate about ...?",
+                "The word or phrase ... most likely refers to ____.",
+            ]
+        if question_type is QuestionType.CAREFUL_READING and level is Level.CET6 and slot == 2:
+            return [
+                "What can be inferred from the author's discussion of ...?",
+                "Why does the author cite the example of ...?",
+                "What does the passage imply about ...?",
+                "What is the author's attitude toward ...?",
+                "Which of the following best describes the author's stance?",
+            ]
+        return []
+
+    @staticmethod
+    def _authenticity_guardrails(level: Level, question_type: QuestionType, slot: int | None) -> list[str]:
+        guardrails = [
+            "do not sound like a coaching handout, textbook moral lesson, or motivational essay",
+            "do not make every question stem begin with the same formula",
+            "keep the passage close to adapted original English materials rather than AI-style explanation",
+        ]
+        if question_type is QuestionType.BANKED_CLOZE:
+            guardrails.extend(
+                [
+                    "avoid obvious tips-list language such as first, second, finally or here are some suggestions",
+                    "avoid turning the passage into classroom advice or a personal reflection",
+                ]
+            )
+        if question_type is QuestionType.LONG_READING:
+            guardrails.extend(
+                [
+                    "avoid generic statements beginning with The passage says, The author believes, or The article tells us in most items",
+                    "avoid making all ten matches look like summary slogans instead of information-bearing paraphrases",
+                ]
+            )
+        if question_type is QuestionType.CAREFUL_READING and slot == 1:
+            guardrails.extend(
+                [
+                    "avoid overusing broad attitude questions when the passage is fact-driven",
+                    "avoid drifting into a vague inspirational conclusion unrelated to the evidence",
+                ]
+            )
+        if question_type is QuestionType.CAREFUL_READING and slot == 2:
+            guardrails.extend(
+                [
+                    "avoid pure fact lookup dominating the set when the passage is viewpoint-driven",
+                    "avoid turning attitude or inference items into easy slogan recognition",
+                ]
+            )
+        if question_type is QuestionType.CAREFUL_READING and level is Level.CET4:
+            guardrails.append("keep the reasoning accessible enough for CET4 instead of writing a mini-CET6 passage")
+        if question_type is QuestionType.CAREFUL_READING and level is Level.CET6:
+            guardrails.append("allow denser logic than CET4, but keep every answer text-supported and exam-like")
+        return guardrails
+
+    @staticmethod
     def _topic_pool(level: Level, question_type: QuestionType, slot: int | None) -> list[str]:
         common_cet4 = [
             "sleep habits and learning efficiency",
@@ -1448,6 +1745,10 @@ class QuestionGenerationPipeline:
             "green commuting and city convenience",
             "reading habits and information overload",
             "community service and civic participation",
+            "museum learning and youth participation",
+            "shared public spaces and student routines",
+            "food delivery habits and campus time use",
+            "community fitness and neighborhood life",
         ]
         common_cet6 = [
             "behavioral economics in everyday decisions",
@@ -1462,6 +1763,10 @@ class QuestionGenerationPipeline:
             "public trust in institutions and expertise",
             "attention economy and deep thinking",
             "technology ethics and social choice",
+            "institutional incentives and human behavior",
+            "risk communication and public judgment",
+            "urban renewal and social memory",
+            "organizational trust and performance measurement",
         ]
         if level is Level.CET4 and question_type is QuestionType.LONG_READING:
             return common_cet4 + [
@@ -1735,8 +2040,10 @@ class QuestionGenerationPipeline:
                 "- answer_key must contain exactly 10 letters, each letter must exist in shared_options, and no letter may repeat.\n"
                 + (
                     "- CET4 passages should usually stay close to study, health, campus, or public-life topics with explicit local clues.\n"
+                    "- Prefer article-like explanation over direct self-help advice or numbered tips.\n"
                     if level is Level.CET4
                     else "- CET6 passages may be denser and more analytical, but should still be solvable through contextual clues rather than specialist knowledge.\n"
+                    "- Prefer commentary, social explanation, or public-interest analysis over loose motivational writing.\n"
                 )
             )
         if question_type is QuestionType.LONG_READING:
@@ -1746,8 +2053,10 @@ class QuestionGenerationPipeline:
                 "- answer_key must contain paragraph letters only.\n"
                 + (
                     "- CET4 long reading should usually feel like a readable explanatory feature or service-style article.\n"
+                    "- Statement prompts should often target an example, warning, recommendation, paragraph role, or practical detail.\n"
                     if level is Level.CET4
                     else "- CET6 long reading may be more information-dense and paraphrase-heavy, but statement matches must remain text-supported.\n"
+                    "- Statement prompts should often target a claim, evidence chain, contrast, limitation, or policy implication.\n"
                 )
             )
         if question_type is QuestionType.WRITING:
@@ -1780,8 +2089,10 @@ class QuestionGenerationPipeline:
         if slot == 1:
             style_note = (
                 "- CET4 Passage One should usually be fact-driven research, medicine, health, or science-popularization material, with question wording around experiment/study/result/participants.\n"
+                "- Passage flow should usually move through background, method/groups, findings, and implication.\n"
                 if level is Level.CET4
                 else "- CET6 Passage One should usually be fact-driven business, market, workplace, or economics material, with question wording around motive/consequence/strategy/comparison.\n"
+                "- Passage flow should usually move through market background, strategy or motive, evidence or consequences, and limited implication.\n"
             )
             return (
                 "- questions must contain exactly 5 items.\n"
@@ -1789,14 +2100,17 @@ class QuestionGenerationPipeline:
                 "- question stems may be direct questions or unfinished statements.\n"
                 f"{style_note}"
                 "- prioritize cause/effect, findings, comparisons, and term-in-context over broad attitude questions.\n"
+                "- At least 2 items should feel like purpose/process/findings/comparison questions rather than generic inference wording.\n"
                 "- do not force all five skill types to appear exactly once; detail questions may appear more than once.\n"
                 "- answer_key must contain exactly 5 letters from A to D."
             )
         if slot == 2:
             style_note = (
                 "- CET4 Passage Two should usually be viewpoint-driven social-life, campus, or consumer-trend material, with question wording around trend/reason/reaction/suggestion.\n"
+                "- Passage flow should usually move through phenomenon, reasons or examples, and the author's suggestion or judgment.\n"
                 if level is Level.CET4
                 else "- CET6 Passage Two should usually be viewpoint-driven psychology, ethics, or technology-reflection material, with question wording around infer/cite/imply/attitude.\n"
+                "- Passage flow should usually move through a modern problem or assumption, critique or citation, and broader implication or stance.\n"
             )
             return (
                 "- questions must contain exactly 5 items.\n"
@@ -1804,6 +2118,7 @@ class QuestionGenerationPipeline:
                 "- question stems may be direct questions or unfinished statements.\n"
                 f"{style_note}"
                 "- prioritize inference, example/citation purpose, and viewpoint/attitude over pure fact lookup.\n"
+                "- At least 2 items should feel like reason/inference/purpose/attitude questions rather than pure sentence-level fact retrieval.\n"
                 "- do not force all five skill types to appear exactly once; inference and detail may carry more weight than attitude or vocabulary.\n"
                 "- answer_key must contain exactly 5 letters from A to D."
             )
@@ -1858,10 +2173,23 @@ class QuestionGenerationPipeline:
                 "Rewrite every banked-cloze shared option as one English word only. "
                 "Do not use phrases, clauses, or multi-word expressions."
             )
+        if "教学提示或建议清单" in joined:
+            return (
+                "Rewrite only the English passage so it sounds like an adapted CET article rather than a tips list or coaching handout. "
+                "Keep the topic, blank positions, answer_key, and vocabulary load aligned."
+            )
         if "item_explanations.correct_answer 不一致" in joined or "解析文本显式指向" in joined:
             return (
                 "Do not rewrite the passage, question prompts, or answer options. "
                 "Re-check every question against the existing passage and options, then correct only answer_key and analysis.item_explanations so that both the answer label and the Chinese explanation point to the same supported answer."
+            )
+        if "长篇阅读匹配句不应大量以 The passage says" in joined or "长篇阅读匹配句的信息类型过于单一" in joined:
+            return (
+                "Keep the passage and paragraph labels stable. Rewrite only the matching statements so they become compact exam-style paraphrase statements instead of meta summaries."
+            )
+        if "仔细阅读 1（CET4）" in joined or "仔细阅读 2（CET4）" in joined or "仔细阅读 1（CET6）" in joined or "仔细阅读 2（CET6）" in joined:
+            return (
+                "Preserve the overall topic when possible, but revise the careful-reading passage framing and question stems so they match the designated CET slot: fact-driven sets should emphasize purpose/process/findings, while viewpoint-driven sets should emphasize reason/inference/purpose/attitude."
             )
         if question_type is QuestionType.LONG_READING:
             return (

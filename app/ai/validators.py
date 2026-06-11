@@ -553,6 +553,8 @@ class CETQuestionValidator:
             QuestionType.CAREFUL_READING,
         }:
             self._validate_objective_passage_style(payload, errors)
+        if question_type is QuestionType.LONG_READING:
+            self._validate_long_reading_statement_style(payload, level, errors)
         if question_type is QuestionType.CAREFUL_READING:
             self._validate_careful_reading_stem_style(payload, level, slot, errors)
         if question_type is QuestionType.WRITING:
@@ -583,6 +585,17 @@ class CETQuestionValidator:
         ]
         if any(marker in lower for marker in forbidden_markers):
             errors.append("客观题文章文体过于像故事、日记或博客，不符合 CET 常见阅读来源风格")
+        didactic_markers = [
+            "here are some tips",
+            "the following tips",
+            "firstly,",
+            "secondly,",
+            "finally,",
+            "in this article, we will",
+            "remember to",
+        ]
+        if sum(marker in lower for marker in didactic_markers) >= 2:
+            errors.append("客观题文章不应写成教学提示或建议清单，应更接近 CET 常见原版说明文/评论文")
 
     def _validate_careful_reading_stem_style(
         self,
@@ -598,18 +611,94 @@ class CETQuestionValidator:
             markers = ("study", "experiment", "research", "researcher", "participants", "finding", "result")
             if not any(any(marker in prompt for marker in markers) for prompt in prompts):
                 errors.append("仔细阅读 1（CET4）题干应更贴近研究/实验/结果型问法")
+            families = (
+                "purpose",
+                "find",
+                "result",
+                "according to the study",
+                "researchers",
+                "participants",
+                "experiment",
+            )
+            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
+                errors.append("仔细阅读 1（CET4）至少应有 2 道更像实验目的、过程或研究发现的题干")
         elif level is Level.CET4 and slot == 2:
             markers = ("trend", "reason", "reaction", "suggest", "attitude", "consumer")
             if not any(any(marker in prompt for marker in markers) for prompt in prompts):
                 errors.append("仔细阅读 2（CET4）题干应更贴近趋势/原因/态度/建议型问法")
+            families = (
+                "contributes to",
+                "reason",
+                "react",
+                "suggest",
+                "attitude",
+                "young people",
+                "consumers",
+                "why does the author mention",
+            )
+            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
+                errors.append("仔细阅读 2（CET4）至少应有 2 道更像原因、反应、建议或态度的题干")
         elif level is Level.CET6 and slot == 1:
             markers = ("motive", "consequence", "strategy", "expansion", "comparison", "report")
             if not any(any(marker in prompt for marker in markers) for prompt in prompts):
                 errors.append("仔细阅读 1（CET6）题干应更贴近商业/策略/后果/报告型问法")
+            families = (
+                "motive",
+                "consequence",
+                "strategy",
+                "according to the report",
+                "comparison",
+                "superior to",
+                "market",
+            )
+            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
+                errors.append("仔细阅读 1（CET6）至少应有 2 道更像动机、后果、比较或报告发现的题干")
         elif level is Level.CET6 and slot == 2:
             markers = ("infer", "imply", "cite", "attitude", "stance", "critical", "skeptical")
             if not any(any(marker in prompt for marker in markers) for prompt in prompts):
                 errors.append("仔细阅读 2（CET6）题干应更贴近推断/例证目的/态度型问法")
+            families = (
+                "infer",
+                "imply",
+                "cite",
+                "attitude",
+                "stance",
+                "skeptical",
+                "critical",
+                "why does the author",
+            )
+            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
+                errors.append("仔细阅读 2（CET6）至少应有 2 道更像推断、例证目的或态度判断的题干")
+
+    def _validate_long_reading_statement_style(
+        self,
+        payload: dict[str, Any],
+        level: Level,
+        errors: list[str],
+    ) -> None:
+        prompts = [str(item.get("prompt", "")).strip().lower() for item in payload.get("questions", [])]
+        if not prompts:
+            return
+        if sum(prompt.startswith(("the passage says", "the passage mentions", "the author says", "the article says")) for prompt in prompts) >= 4:
+            errors.append("长篇阅读匹配句不应大量以 The passage says / The author says 开头，需更像真题陈述句")
+        if level is Level.CET4:
+            marker_groups = (
+                ("students", "learners", "young people"),
+                ("benefit", "mistake", "problem", "challenge", "advice", "suggestion"),
+                ("example", "reason", "practice", "strategy", "habit"),
+            )
+        else:
+            marker_groups = (
+                ("companies", "institutions", "workers", "citizens", "researchers"),
+                ("claim", "evidence", "policy", "risk", "advantage", "pressure", "consequence"),
+                ("comparison", "response", "report", "finding", "critics", "supporters"),
+            )
+        covered = 0
+        for group in marker_groups:
+            if any(any(marker in prompt for marker in group) for prompt in prompts):
+                covered += 1
+        if covered < 2:
+            errors.append("长篇阅读匹配句的信息类型过于单一，不像真题中围绕例子、问题、原因、建议或证据的混合设问")
 
     def _validate_writing_prompt_style(
         self,
