@@ -1384,6 +1384,7 @@ struct YueJieRustApp {
     weakness_index: usize,
     vocabulary: Vec<VocabularyEntry>,
     vocabulary_index: usize,
+    history_action_index: usize,
     result_action_index: usize,
     review_action_index: usize,
     settings_focus: usize,
@@ -1410,7 +1411,7 @@ impl YueJieRustApp {
             type_index: 0,
             type_cards: Vec::new(),
             click_areas: Vec::new(),
-            status_line: String::from("方向键、Enter、Esc、Q 和鼠标都可使用。"),
+            status_line: String::from("方向键、Enter、Esc、Ctrl+Q 和鼠标都可使用。"),
             generating_task: None,
             generating_tick: 0,
             generation_sequence: 0,
@@ -1434,6 +1435,7 @@ impl YueJieRustApp {
             weakness_index: 0,
             vocabulary: Vec::new(),
             vocabulary_index: 0,
+            history_action_index: 0,
             result_action_index: 0,
             review_action_index: 0,
             settings_focus: 0,
@@ -1599,13 +1601,14 @@ impl YueJieRustApp {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(true),
-            KeyCode::Esc => {
-                self.handle_escape()?;
-                return Ok(false);
-            }
-            _ => {}
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
+        {
+            return Ok(true);
+        }
+        if key.code == KeyCode::Esc {
+            self.handle_escape()?;
+            return Ok(false);
         }
 
         match self.screen {
@@ -1903,6 +1906,14 @@ impl YueJieRustApp {
             return Ok(());
         }
         match key.code {
+            KeyCode::Left => {
+                self.history_action_index = self.history_action_index.saturating_sub(1);
+                self.pending_history_delete_attempt_id = None;
+            }
+            KeyCode::Right => {
+                self.history_action_index = (self.history_action_index + 1).min(3);
+                self.pending_history_delete_attempt_id = None;
+            }
             KeyCode::Up => {
                 self.history_index = self.history_index.saturating_sub(1);
                 self.pending_history_delete_attempt_id = None;
@@ -1911,7 +1922,12 @@ impl YueJieRustApp {
                 self.history_index = (self.history_index + 1).min(self.history.len() - 1);
                 self.pending_history_delete_attempt_id = None;
             }
-            KeyCode::Enter => self.perform_action(Action::HistoryReview(self.history_index))?,
+            KeyCode::Enter => match self.history_action_index {
+                0 => self.perform_action(Action::HistoryReview(self.history_index))?,
+                1 => self.perform_action(Action::HistoryRedo(self.history_index))?,
+                2 => self.perform_action(Action::HistoryDelete(self.history_index))?,
+                _ => self.perform_action(Action::BackHistory)?,
+            },
             KeyCode::Char('r') => self.perform_action(Action::HistoryRedo(self.history_index))?,
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.perform_action(Action::HistoryDelete(self.history_index))?
@@ -2470,6 +2486,7 @@ impl YueJieRustApp {
     fn open_history(&mut self) -> Result<()> {
         self.history = self.backend.history()?.history;
         self.history_index = 0;
+        self.history_action_index = 0;
         self.pending_history_delete_attempt_id = None;
         self.screen = Screen::History;
         self.status_line = String::from(
@@ -3863,7 +3880,7 @@ impl YueJieRustApp {
             buttons[0],
             palette,
             "查看解析",
-            true,
+            self.history_action_index == 0,
             Action::HistoryReview(self.history_index),
         );
         self.draw_action_button(
@@ -3871,7 +3888,7 @@ impl YueJieRustApp {
             buttons[1],
             palette,
             "重新作答",
-            false,
+            self.history_action_index == 1,
             Action::HistoryRedo(self.history_index),
         );
         self.draw_action_button(
@@ -3879,7 +3896,7 @@ impl YueJieRustApp {
             buttons[2],
             palette,
             "删除记录",
-            false,
+            self.history_action_index == 2,
             Action::HistoryDelete(self.history_index),
         );
         self.draw_action_button(
@@ -3887,7 +3904,7 @@ impl YueJieRustApp {
             buttons[3],
             palette,
             "返回",
-            false,
+            self.history_action_index == 3,
             Action::BackHistory,
         );
         self.draw_status_line(frame, chunks[4], palette);
