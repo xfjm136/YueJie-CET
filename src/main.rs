@@ -2875,8 +2875,8 @@ impl YueJieRustApp {
         let trend_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),
-                Constraint::Length(6),
+                Constraint::Length(7),
+                Constraint::Length(7),
                 Constraint::Min(4),
             ])
             .split(bottom[0]);
@@ -5787,16 +5787,16 @@ impl YueJieRustApp {
         let delta = last_value - first_value;
         let chart_area = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
         let chart_style = Style::default().bg(palette.panel_alt);
         frame.render_widget(
             Paragraph::new(String::new()).style(chart_style),
-            chart_area[1],
+            chart_area[0],
         );
 
         let dataset = Dataset::default()
-            .marker(symbols::Marker::Dot)
+            .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(
                 Style::default()
@@ -5820,24 +5820,6 @@ impl YueJieRustApp {
                     .add_modifier(Modifier::BOLD),
             )
             .data(&last_point);
-        let x_labels = if sampled.len() >= 2 {
-            vec![
-                Span::styled("较早", Style::default().fg(palette.muted)),
-                Span::styled("最近", Style::default().fg(palette.muted)),
-            ]
-        } else {
-            Vec::new()
-        };
-        let y_labels = vec![
-            Span::styled(
-                trend_value_text(metric, lower),
-                Style::default().fg(palette.muted),
-            ),
-            Span::styled(
-                trend_value_text(metric, upper),
-                Style::default().fg(palette.muted),
-            ),
-        ];
         frame.render_widget(
             Chart::new(vec![dataset, focus_dataset])
                 .style(chart_style)
@@ -5845,32 +5827,14 @@ impl YueJieRustApp {
                     Axis::default()
                         .bounds([0.0, (sampled.len().saturating_sub(1)) as f64])
                         .style(Style::default().fg(palette.muted).bg(palette.panel_alt))
-                        .labels(x_labels),
+                        .labels(Vec::<Span>::new()),
                 )
                 .y_axis(
                     Axis::default()
                         .bounds([lower, upper])
                         .style(Style::default().fg(palette.muted).bg(palette.panel_alt))
-                        .labels(y_labels),
+                        .labels(Vec::<Span>::new()),
                 ),
-            chart_area[1],
-        );
-
-        let summary_line = Line::from(vec![
-            Span::styled(
-                format!("区间 {}", trend_range_text(metric, min_sample, max_sample)),
-                Style::default().fg(palette.muted),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("峰值 {}", trend_value_text(metric, max_sample)),
-                Style::default().fg(color),
-            ),
-        ]);
-        frame.render_widget(
-            Paragraph::new(Text::from(vec![summary_line]))
-                .alignment(Alignment::Center)
-                .style(Style::default().bg(palette.panel_alt)),
             chart_area[0],
         );
 
@@ -5887,6 +5851,11 @@ impl YueJieRustApp {
                 Span::styled(
                     format!("最新 {}", trend_value_text(metric, last_value)),
                     Style::default().fg(palette.text),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("区间 {}", trend_range_text(metric, min_sample, max_sample)),
+                    Style::default().fg(palette.muted),
                 ),
                 Span::raw("  "),
                 Span::styled(delta_symbol, Style::default().fg(delta_color)),
@@ -5909,7 +5878,7 @@ impl YueJieRustApp {
             Paragraph::new(Text::from(vec![footer]))
                 .alignment(Alignment::Center)
                 .style(Style::default().bg(palette.panel_alt)),
-            chart_area[2],
+            chart_area[1],
         );
     }
 
