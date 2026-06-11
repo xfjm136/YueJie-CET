@@ -5783,12 +5783,12 @@ impl YueJieRustApp {
         let delta = last_value - first_value;
         let chart_area = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
         let chart_style = Style::default().bg(palette.panel_alt);
         frame.render_widget(
             Paragraph::new(String::new()).style(chart_style),
-            chart_area[0],
+            chart_area[1],
         );
 
         let dataset = Dataset::default()
@@ -5801,21 +5801,72 @@ impl YueJieRustApp {
                     .add_modifier(Modifier::BOLD),
             )
             .data(&sampled);
+        let last_point = sampled
+            .last()
+            .copied()
+            .map(|point| vec![point])
+            .unwrap_or_default();
+        let focus_dataset = Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Scatter)
+            .style(
+                Style::default()
+                    .fg(palette.accent)
+                    .bg(palette.panel_alt)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .data(&last_point);
+        let x_labels = if sampled.len() >= 2 {
+            vec![
+                Span::styled("较早", Style::default().fg(palette.muted)),
+                Span::styled("最近", Style::default().fg(palette.muted)),
+            ]
+        } else {
+            Vec::new()
+        };
+        let y_labels = vec![
+            Span::styled(
+                trend_value_text(metric, lower),
+                Style::default().fg(palette.muted),
+            ),
+            Span::styled(
+                trend_value_text(metric, upper),
+                Style::default().fg(palette.muted),
+            ),
+        ];
         frame.render_widget(
-            Chart::new(vec![dataset])
+            Chart::new(vec![dataset, focus_dataset])
                 .style(chart_style)
                 .x_axis(
                     Axis::default()
                         .bounds([0.0, (sampled.len().saturating_sub(1)) as f64])
                         .style(Style::default().fg(palette.muted).bg(palette.panel_alt))
-                        .labels(Vec::<Span>::new()),
+                        .labels(x_labels),
                 )
                 .y_axis(
                     Axis::default()
                         .bounds([lower, upper])
                         .style(Style::default().fg(palette.muted).bg(palette.panel_alt))
-                        .labels(Vec::<Span>::new()),
+                        .labels(y_labels),
                 ),
+            chart_area[1],
+        );
+
+        let summary_line = Line::from(vec![
+            Span::styled(
+                format!("区间 {}", trend_range_text(metric, min_sample, max_sample)),
+                Style::default().fg(palette.muted),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("峰值 {}", trend_value_text(metric, max_sample)),
+                Style::default().fg(color),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![summary_line]))
+                .alignment(Alignment::Center)
+                .style(Style::default().bg(palette.panel_alt)),
             chart_area[0],
         );
 
@@ -5854,7 +5905,7 @@ impl YueJieRustApp {
             Paragraph::new(Text::from(vec![footer]))
                 .alignment(Alignment::Center)
                 .style(Style::default().bg(palette.panel_alt)),
-            chart_area[1],
+            chart_area[2],
         );
     }
 
@@ -6694,6 +6745,16 @@ fn seconds_to_text(seconds: i64) -> String {
     format!("{:02}:{:02}", minutes, remain)
 }
 
+fn format_iso_brief(value: &str) -> String {
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
+        return parsed
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+    }
+    value.to_string()
+}
+
 fn parse_dimension_preview(raw: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return "维度数据解析失败".to_string();
@@ -6754,6 +6815,14 @@ fn trend_value_text(metric: TrendMetric, value: f64) -> String {
     }
 }
 
+fn trend_range_text(metric: TrendMetric, min_value: f64, max_value: f64) -> String {
+    format!(
+        "{}~{}",
+        trend_value_text(metric, min_value),
+        trend_value_text(metric, max_value)
+    )
+}
+
 fn trend_delta_text(metric: TrendMetric, delta: f64) -> String {
     match metric {
         TrendMetric::Percentage => format!("{:+.1}%", delta),
@@ -6789,21 +6858,22 @@ fn sample_series_for_width(series: &[f64], max_points: usize) -> Vec<(f64, f64)>
             .collect();
     }
 
-    let bucket = series.len() as f64 / max_points as f64;
     let mut sampled = Vec::with_capacity(max_points);
+    let last_index = series.len() - 1;
+    let denom = max_points.saturating_sub(1).max(1) as f64;
+    let mut previous_index: Option<usize> = None;
     for index in 0..max_points {
-        let start = (index as f64 * bucket).floor() as usize;
-        let mut end = (((index + 1) as f64) * bucket).floor() as usize;
-        if end <= start {
-            end = (start + 1).min(series.len());
+        let position = (index as f64 / denom) * last_index as f64;
+        let source_index = position.round() as usize;
+        let clamped_index = source_index.min(last_index);
+        if previous_index == Some(clamped_index) {
+            continue;
         }
-        let slice = &series[start.min(series.len() - 1)..end.min(series.len())];
-        let avg = if slice.is_empty() {
-            series[start.min(series.len() - 1)]
-        } else {
-            slice.iter().sum::<f64>() / slice.len() as f64
-        };
-        sampled.push((index as f64, avg));
+        previous_index = Some(clamped_index);
+        sampled.push((sampled.len() as f64, series[clamped_index]));
+    }
+    if sampled.last().map(|(_, value)| *value) != Some(series[last_index]) {
+        sampled.push((sampled.len() as f64, series[last_index]));
     }
     sampled
 }
