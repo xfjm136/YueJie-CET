@@ -154,6 +154,24 @@ class PromptTests(unittest.TestCase):
         self.assertIn("consumer commentary", cet4_slot2["register"])
         self.assertIn("business", cet6_slot1["register"])
         self.assertIn("reflective or critical", cet6_slot2["register"])
+        self.assertIn("original English materials", cet4_slot1["source_material_hint"])
+        self.assertIn("opinion piece", cet6_slot2["source_material_hint"])
+
+    def test_writing_and_translation_blueprints_keep_cet_style_hints(self) -> None:
+        writing = self.pipeline._build_blueprint(
+            Level.CET4,
+            QuestionType.WRITING,
+            None,
+            None,
+        )
+        translation = self.pipeline._build_blueprint(
+            Level.CET6,
+            QuestionType.TRANSLATION,
+            None,
+            None,
+        )
+        self.assertIn("outline-led", writing["writing_mode"])
+        self.assertIn("Chinese culture", translation["translation_domain"])
 
     def test_postprocess_normalizes_careful_reading_options_and_skill_tags(self) -> None:
         payload = {
@@ -183,6 +201,7 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(normalized["questions"][0]["options"][0], "A. important")
         self.assertEqual(normalized["questions"][0]["skill_tag"], "vocabulary_in_context")
         self.assertEqual(normalized["analysis"]["item_explanations"][0]["question_id"], "q1")
+        self.assertEqual(normalized["analysis"]["item_explanations"][0]["correct_answer"], "A")
         self.assertEqual(len(normalized["analysis"]["test_tips"]), 3)
 
     def test_postprocess_relabels_long_reading_paragraphs(self) -> None:

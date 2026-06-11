@@ -173,6 +173,50 @@ class ValidationTests(unittest.TestCase):
         validated = self.validator.validate(payload, Level.CET6, QuestionType.CAREFUL_READING, 2)
         self.assertEqual(validated["questions"][3]["skill_tag"], "attitude")
 
+    def test_validator_rejects_conflicting_answer_key_and_explanations(self) -> None:
+        payload = {
+            "title": "Remote Work Debate",
+            "topic": "work culture",
+            "shared_options": [],
+            "passage": {
+                "title": "Remote Work Debate",
+                "paragraphs": [
+                    "Remote work is no longer a temporary solution for many organizations. What began as an emergency measure has gradually become a new way of organizing labor, communication, and evaluation. Supporters argue that it gives workers greater autonomy and helps employers recruit talent from a wider geographical area. Critics, however, say that flexibility can hide new forms of pressure, especially when employees feel they must stay constantly available to prove commitment.",
+                    "The debate is not simply about where people work. It is also about what managers believe productivity looks like. In some companies, workers are trusted to arrange their own schedules as long as results remain strong. In others, digital monitoring tools record activity in a way that suggests output matters less than visible signs of effort. This difference reveals an older management habit: many leaders still equate supervision with control, even when the work itself requires concentration rather than constant display.",
+                    "Advocates of remote work often cite improved work-life balance, but that phrase can be misleading. Some employees do gain time by avoiding long commutes, yet others find that work expands into evenings and weekends. The home office can remove one boundary while erasing another. As a result, the same arrangement may feel liberating to one worker and exhausting to another.",
+                    "This is why the future of remote work depends less on technology than on institutional judgment. A company may adopt advanced platforms, but if it fails to clarify expectations, encourage recovery time, and judge performance by meaningful outcomes, flexibility becomes another source of uncertainty. The lesson is not that remote work is either inherently good or inherently harmful. Rather, it reflects the values of the system in which it operates.",
+                    "The passage therefore challenges a simple either-or debate. It suggests that remote work should not be praised merely because it feels modern, nor rejected simply because it changes established routines. What matters is whether organizations use flexibility to support sustained work, fair evaluation, and genuine recovery time. In this sense, the author is less interested in technology itself than in the assumptions behind management decisions. Remote work becomes a test of what companies truly value: trust and outcomes, or observation and control. This final contrast gives the passage its critical tone and explains why the author repeatedly returns to questions of judgment rather than convenience. It also clarifies why the article treats management culture, rather than software itself, as the deeper source of both promise and risk.",
+                ],
+            },
+            "questions": [
+                {"id": "q1", "prompt": "What can be inferred about some managers from Paragraph 2?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
+                {"id": "q2", "prompt": "Why does the author mention digital monitoring tools?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "inference", "hint": None},
+                {"id": "q3", "prompt": "What is the main idea of the passage?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "main_idea", "hint": None},
+                {"id": "q4", "prompt": "What is the author's attitude toward the promise of flexibility?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "attitude", "hint": None},
+                {"id": "q5", "prompt": "According to the passage, what may happen when boundaries disappear?", "options": ["A. a", "B. b", "C. c", "D. d"], "skill_tag": "detail", "hint": None},
+            ],
+            "answer_key": ["A", "B", "C", "D", "A"],
+            "analysis": {
+                "overall_strategy": "关注作者如何转折和举例。",
+                "overall_summary": "文章讨论远程办公背后的管理逻辑。",
+                "item_explanations": [
+                    {"question_id": "q1", "correct_answer": "A", "explanation": "对应推断。", "skill_tag": "inference"},
+                    {"question_id": "q2", "correct_answer": "C", "explanation": "应选 C，对应例证目的。", "skill_tag": "inference"},
+                    {"question_id": "q3", "correct_answer": "C", "explanation": "对应主旨。", "skill_tag": "main_idea"},
+                    {"question_id": "q4", "correct_answer": "D", "explanation": "对应态度。", "skill_tag": "attitude"},
+                    {"question_id": "q5", "correct_answer": "A", "explanation": "对应细节。", "skill_tag": "detail"},
+                ],
+                "test_tips": ["看转折", "看举例意图", "看结论句"],
+            },
+            "vocabulary": [
+                {"lemma": "autonomy", "surface_form": "autonomy", "level_hint": "cet6", "meaning_zh": "自主性", "example_en": ""},
+                {"lemma": "monitoring", "surface_form": "monitoring", "level_hint": "cet6", "meaning_zh": "监控", "example_en": ""},
+                {"lemma": "boundary", "surface_form": "boundary", "level_hint": "cet6", "meaning_zh": "边界", "example_en": ""},
+            ],
+        }
+        with self.assertRaises(QuestionSetValidationError):
+            self.validator.validate(payload, Level.CET6, QuestionType.CAREFUL_READING, 2)
+
     def test_banked_cloze_rejects_duplicate_answer_letters(self) -> None:
         payload = {
             "title": "Study Habits",

@@ -186,12 +186,15 @@ class QuestionGenerationPipeline:
             "topic": secrets_choice(topic_pool),
             "genre": self._genre_for(level, question_type, slot),
             "register": self._register_for(level, question_type, slot),
+            "source_material_hint": self._source_material_hint(level, question_type, slot),
             "target_word_count": self._target_word_count(level, question_type),
             "word_count_guidance": self._strict_word_count_guidance(level, question_type),
             "skill_focus": self._skill_focus(level, question_type, slot),
             "difficulty_controls": self._difficulty_controls(level, question_type, slot),
             "structure_plan": self._structure_plan(level, question_type, slot),
             "option_strategy": self._option_strategy(level, question_type, slot),
+            "writing_mode": self._writing_mode(level, question_type),
+            "translation_domain": self._translation_domain(level, question_type),
             "weakness_focus": weakness_summary or "No weakness summary yet. Keep the skill mix balanced.",
             "question_id_pattern": self._question_id_pattern(question_type),
             "vocabulary_target_count": self._vocabulary_target_count(question_type),
@@ -308,7 +311,7 @@ class QuestionGenerationPipeline:
             "The final output must be directly machine-readable and fully self-contained. "
             "Passage, titles, questions, and answer options must stay in English. "
             "Analysis and vocabulary explanations must be in Chinese. "
-            "Keep the output exam-like, concise, and structurally exact."
+            "Keep the output exam-like, concise, structurally exact, and close to adapted CET source materials rather than blogs, motivational essays, or fictional stories."
         )
 
     def _generation_user_prompt(
@@ -336,7 +339,8 @@ class QuestionGenerationPipeline:
             f"Mandatory spec:\n{self._question_spec(level, question_type, slot)}\n"
             "Output rules:\n"
             "- Keep the passage natural and exam-like.\n"
-            "- Keep the style close to CET source materials such as news features, opinion pieces, science explanations, educational commentary, or general academic reading.\n"
+            "- Keep the style close to CET source materials such as news features, opinion pieces, science explanations, educational commentary, lecture-derived exposition, or general academic reading.\n"
+            "- Objective passages should feel like adapted original English materials, not like a student's essay, chat response, diary entry, marketing copy, or story opening.\n"
             "- Background knowledge must be common or recoverable from textual clues.\n"
             "- Ensure every answer is uniquely supported by the passage.\n"
             "- Avoid giving away answers through obvious grammatical mismatch.\n"
@@ -348,6 +352,7 @@ class QuestionGenerationPipeline:
             "- Provide exactly the requested number of vocabulary items, not more.\n"
             "- Only analysis.* and vocabulary.meaning_zh may be in Chinese; the rest must be in English.\n"
             "- Do not place Chinese characters in title, topic, passage, question prompts, shared options, answer options, or example_en.\n"
+            "- Avoid direct dialogue, heavy quotation, dramatic scene-setting, fantasy, or overtly inspirational tone in objective passages.\n"
             "- For banked cloze, the 15 options must be shared options only, not repeated per blank.\n"
             "- For banked cloze, every shared option must be exactly one English word, not a phrase.\n"
             "- For banked cloze, each answer letter may be used only once.\n"
@@ -355,8 +360,8 @@ class QuestionGenerationPipeline:
             "- For long reading, every item prompt must be a statement rather than a question and must not include A./B./C. labels.\n"
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
-            "- For writing, produce an exam-style essay prompt, task instructions, and a high-scoring sample essay.\n"
-            "- For translation, provide a Chinese source passage and a natural English reference translation.\n"
+            "- For writing, produce a CET-style prompt format such as an outline-led topic, a short situational instruction, or a sentence-led argumentative task as appropriate to the level.\n"
+            "- For translation, provide a Chinese source passage on Chinese culture, history, society, development, education, ecology, or technology as appropriate to the level.\n"
             "- Do not write in a dramatic, fictional, or conversational blog style.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
             f"Question-type details:\n{self._question_type_details(question_type, level, slot)}\n"
@@ -532,8 +537,8 @@ class QuestionGenerationPipeline:
         for index, item in enumerate(analysis.get("item_explanations", []), start=1):
             explanation = dict(item) if isinstance(item, dict) else {}
             explanation["question_id"] = f"q{index}"
-            explanation["correct_answer"] = (
-                str(explanation.get("correct_answer", "")).strip().upper().replace(".", "")
+            explanation["correct_answer"] = self._normalize_single_answer_token(
+                explanation.get("correct_answer", "")
             )
             explanation["skill_tag"] = self._normalized_skill_tag(
                 {"prompt": questions[index - 1]["prompt"], "skill_tag": explanation.get("skill_tag", "")},
@@ -569,12 +574,18 @@ class QuestionGenerationPipeline:
     @staticmethod
     def _normalize_answer_key(answer_key: list[Any], question_type: QuestionType) -> list[str]:
         normalized = [
-            str(item).strip().upper().replace(".", "").replace(")", "")
+            QuestionGenerationPipeline._normalize_single_answer_token(item)
             for item in answer_key
         ]
         if question_type is QuestionType.CAREFUL_READING:
             return [item[:1] for item in normalized]
         return [item[:1] if item else "" for item in normalized]
+
+    @staticmethod
+    def _normalize_single_answer_token(raw: Any) -> str:
+        text = str(raw).strip().upper().replace(".", "").replace(")", "")
+        match = re.search(r"[A-O]", text)
+        return match.group(0) if match else text
 
     @staticmethod
     def _normalize_shared_options(shared_options: list[Any], question_type: QuestionType) -> list[str]:
@@ -1165,7 +1176,7 @@ class QuestionGenerationPipeline:
     def _structure_plan(level: Level, question_type: QuestionType, slot: int | None) -> list[str]:
         if question_type is QuestionType.BANKED_CLOZE:
             return [
-                "2-3 coherent paragraphs with 10 inline blanks",
+                "2-3 coherent expository paragraphs with 10 inline blanks",
                 "15 shared options labeled A. to O.",
                 "blank positions should be spread across the passage",
             ]
@@ -1190,23 +1201,23 @@ class QuestionGenerationPipeline:
         if slot == 2:
             if level is Level.CET4:
                 return [
-                    "4-6 coherent paragraphs in a social-life, campus, or consumer-trend passage",
+                    "4-6 coherent expository or commentary paragraphs in a social-life, campus, or consumer-trend passage",
                     "5 four-option questions or unfinished statements",
                     "question order should roughly follow passage logic and emphasize inference, causes, reactions, and viewpoint",
                 ]
             return [
-                "4-6 coherent paragraphs in a reflective, ethical, or technology-critique passage",
+                "4-6 coherent expository or analytical paragraphs in a reflective, ethical, or technology-critique passage",
                 "5 four-option questions or unfinished statements",
                 "question order should roughly follow passage logic and emphasize inference, citation purpose, and nuanced attitude",
             ]
         if level is Level.CET4:
             return [
-                "4-6 coherent paragraphs in a research, health, or science-popularization passage",
+                "4-6 coherent expository paragraphs in a research, health, or science-popularization passage",
                 "5 four-option questions or unfinished statements",
                 "question order should roughly follow passage logic with stronger cause/effect, result, and term-in-context focus",
             ]
         return [
-            "4-6 coherent paragraphs in a business, workplace, or economics passage",
+            "4-6 coherent expository or report-style paragraphs in a business, workplace, or economics passage",
             "5 four-option questions or unfinished statements",
             "question order should roughly follow passage logic with stronger consequence, finding, and comparison focus",
         ]
@@ -1277,6 +1288,54 @@ class QuestionGenerationPipeline:
         return 5
 
     @staticmethod
+    def _source_material_hint(level: Level, question_type: QuestionType, slot: int | None) -> str:
+        if question_type is QuestionType.BANKED_CLOZE:
+            return (
+                "adapted magazine or newspaper-style expository passage with stable formal tone"
+                if level is Level.CET4
+                else "adapted commentary or feature passage from magazines, newspapers, or general academic sources"
+            )
+        if question_type is QuestionType.LONG_READING:
+            return (
+                "adapted long-form feature, public information article, or educational explainer"
+                if level is Level.CET4
+                else "adapted long-form social-science or public-interest feature with clear section logic"
+            )
+        if question_type is QuestionType.WRITING:
+            return (
+                "CET writing prompt rather than free composition topic"
+            )
+        if question_type is QuestionType.TRANSLATION:
+            return "Chinese source passage suitable for CET paragraph translation"
+        if slot == 1:
+            return (
+                "adapted research report, science explainer, or business report from original English materials"
+            )
+        return (
+            "adapted opinion piece, social commentary, or reflective magazine article from original English materials"
+        )
+
+    @staticmethod
+    def _writing_mode(level: Level, question_type: QuestionType) -> str:
+        if question_type is not QuestionType.WRITING:
+            return ""
+        return (
+            "mainly outline-led or situational short essay, with occasional practical campus/social writing flavor"
+            if level is Level.CET4
+            else "mainly sentence-led or opinion-led argumentative writing, sometimes phenomenon-comment or comparison-choice in tone"
+        )
+
+    @staticmethod
+    def _translation_domain(level: Level, question_type: QuestionType) -> str:
+        if question_type is not QuestionType.TRANSLATION:
+            return ""
+        return (
+            "Chinese culture, history, public life, education, transport, ecology, or everyday social development"
+            if level is Level.CET4
+            else "Chinese culture, history, economic development, innovation, governance, ecology, or social transformation"
+        )
+
+    @staticmethod
     def _topic_pool(level: Level, question_type: QuestionType, slot: int | None) -> list[str]:
         common_cet4 = [
             "sleep habits and learning efficiency",
@@ -1285,6 +1344,12 @@ class QuestionGenerationPipeline:
             "healthy routines in digital life",
             "consumer choices and sustainability",
             "public communication and trust",
+            "library use and independent learning",
+            "exercise and student well-being",
+            "public health awareness in daily life",
+            "green commuting and city convenience",
+            "reading habits and information overload",
+            "community service and civic participation",
         ]
         common_cet6 = [
             "behavioral economics in everyday decisions",
@@ -1293,16 +1358,30 @@ class QuestionGenerationPipeline:
             "city planning and climate adaptation",
             "lifelong learning in an aging society",
             "media literacy and information credibility",
+            "platform governance and digital responsibility",
+            "innovation policy and talent development",
+            "workplace flexibility and performance culture",
+            "public trust in institutions and expertise",
+            "attention economy and deep thinking",
+            "technology ethics and social choice",
         ]
         if level is Level.CET4 and question_type is QuestionType.LONG_READING:
             return common_cet4 + [
                 "student internships and career preparation",
                 "community services and civic habits",
+                "public libraries and neighborhood learning",
+                "healthy campus dining and student choices",
+                "museum visits and informal education",
+                "urban parks and community well-being",
             ]
         if level is Level.CET6 and question_type is QuestionType.LONG_READING:
             return common_cet6 + [
                 "innovation policy and university research",
                 "workplace flexibility and productivity",
+                "urban renewal and historic preservation",
+                "public health systems and risk communication",
+                "research culture and interdisciplinary cooperation",
+                "transport infrastructure and regional integration",
             ]
         if question_type is QuestionType.CAREFUL_READING and slot == 1:
             return (
@@ -1313,6 +1392,11 @@ class QuestionGenerationPipeline:
                     "nutrition research and daily energy levels",
                     "stress experiments and college decision making",
                     "medical or behavioral study findings in student life",
+                    "breakfast habits and classroom performance",
+                    "walking routines and concentration in students",
+                    "noise exposure and study efficiency",
+                    "reading format and memory retention",
+                    "study breaks and sustained attention",
                 ]
                 if level is Level.CET4
                 else [
@@ -1322,6 +1406,11 @@ class QuestionGenerationPipeline:
                     "consumer credit and retail strategy",
                     "business models and competitive advantage",
                     "corporate expansion and market consequence",
+                    "subscription models and customer retention",
+                    "automation and workplace restructuring",
+                    "supply chain pressure and pricing decisions",
+                    "brand strategy and consumer loyalty",
+                    "labor-market incentives and firm behavior",
                 ]
             )
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
@@ -1333,6 +1422,11 @@ class QuestionGenerationPipeline:
                     "public trends and peer influence",
                     "changing consumer preferences among students",
                     "social-media habits and everyday decision making",
+                    "shared bicycles and urban student mobility",
+                    "volunteering and social belonging among students",
+                    "digital reading and fragmented attention",
+                    "minimalist consumption among young adults",
+                    "peer influence on campus lifestyle choices",
                 ]
                 if level is Level.CET4
                 else [
@@ -1342,6 +1436,11 @@ class QuestionGenerationPipeline:
                     "digital platforms and moral responsibility",
                     "technology criticism and human autonomy",
                     "social psychology of online conformity",
+                    "misinformation and civic judgment",
+                    "AI-generated content and trust",
+                    "remote work and identity formation",
+                    "surveillance convenience and personal freedom",
+                    "platform design and democratic discourse",
                 ]
             )
         if question_type is QuestionType.BANKED_CLOZE:
@@ -1353,6 +1452,14 @@ class QuestionGenerationPipeline:
                     "volunteering and campus community",
                     "public transportation and daily choices",
                     "consumer decisions and sustainability",
+                    "public libraries and reading habits",
+                    "sleep and student well-being",
+                    "community health and public awareness",
+                    "food waste reduction on campus",
+                    "exercise routines and self-discipline",
+                    "shared study spaces and learning habits",
+                    "public service convenience in city life",
+                    "digital payments and daily efficiency",
                 ]
                 if level is Level.CET4
                 else [
@@ -1362,6 +1469,14 @@ class QuestionGenerationPipeline:
                     "urban planning and social efficiency",
                     "behavioral economics in everyday choices",
                     "environmental responsibility and public action",
+                    "public policy and civic cooperation",
+                    "research literacy and misinformation",
+                    "productivity and digital overload",
+                    "organizational learning and adaptation",
+                    "public infrastructure and social efficiency",
+                    "urban sustainability and citizen behavior",
+                    "innovation culture and practical judgment",
+                    "data use and public confidence",
                 ]
             )
         if question_type is QuestionType.WRITING:
@@ -1373,6 +1488,14 @@ class QuestionGenerationPipeline:
                     "time management and study efficiency",
                     "balanced technology use on campus",
                     "environmental responsibility in daily life",
+                    "library use and independent learning",
+                    "campus service and student responsibility",
+                    "how to handle stress in college life",
+                    "the importance of teamwork in college",
+                    "how to improve study efficiency",
+                    "the value of volunteering for young people",
+                    "maintaining mental and physical balance at university",
+                    "using social media wisely",
                 ]
                 if level is Level.CET4
                 else [
@@ -1382,6 +1505,14 @@ class QuestionGenerationPipeline:
                     "public trust and responsible communication",
                     "innovation and human judgment",
                     "technology and the quality of learning",
+                    "competition and cooperation in modern society",
+                    "individual choice and social responsibility",
+                    "the value of patience in a fast-moving world",
+                    "efficiency and depth in the information age",
+                    "innovation and the limits of convenience",
+                    "public responsibility in online expression",
+                    "whether technology strengthens or weakens human judgment",
+                    "the relationship between success and resilience",
                 ]
             )
         if question_type is QuestionType.TRANSLATION:
@@ -1393,6 +1524,14 @@ class QuestionGenerationPipeline:
                     "green travel and urban life",
                     "public services and civic convenience",
                     "family education and good habits",
+                    "mobile payment and daily convenience",
+                    "traditional crafts and modern life",
+                    "sports and public health awareness",
+                    "tea culture and daily hospitality",
+                    "public transportation and green living",
+                    "community festivals and neighborhood life",
+                    "local tourism and cultural memory",
+                    "voluntary service and social warmth",
                 ]
                 if level is Level.CET4
                 else [
@@ -1402,6 +1541,14 @@ class QuestionGenerationPipeline:
                     "ecological protection and long-term governance",
                     "traditional craftsmanship and innovation",
                     "rural revitalization and balanced development",
+                    "high-speed rail and regional development",
+                    "digital economy and public life",
+                    "scientific innovation and national growth",
+                    "cultural heritage protection and modern cities",
+                    "green development and ecological civilization",
+                    "traditional philosophy and contemporary values",
+                    "major engineering projects and public benefit",
+                    "education reform and talent cultivation",
                 ]
             )
         if level is Level.CET4:
@@ -1620,6 +1767,11 @@ class QuestionGenerationPipeline:
             return (
                 "Rewrite every banked-cloze shared option as one English word only. "
                 "Do not use phrases, clauses, or multi-word expressions."
+            )
+        if "item_explanations.correct_answer 不一致" in joined or "解析文本显式指向" in joined:
+            return (
+                "Do not rewrite the passage, question prompts, or answer options. "
+                "Re-check every question against the existing passage and options, then correct only answer_key and analysis.item_explanations so that both the answer label and the Chinese explanation point to the same supported answer."
             )
         if question_type is QuestionType.LONG_READING:
             return (

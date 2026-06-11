@@ -86,6 +86,11 @@ class CETQuestionValidator:
         question_ids = {item.get("id") for item in questions if isinstance(item, dict)}
         if explanation_ids and question_ids and explanation_ids != question_ids:
             errors.append("analysis.item_explanations 的 question_id 必须与 questions.id 一一对应")
+        self._validate_answer_explanation_alignment(
+            normalized,
+            question_type,
+            errors,
+        )
 
         if len(normalized.get("vocabulary", [])) < 3:
             errors.append("vocabulary 至少应提供 3 个重点词汇")
@@ -102,6 +107,7 @@ class CETQuestionValidator:
             self._validate_writing(normalized, level, errors)
         else:
             self._validate_translation(normalized, level, errors)
+        self._validate_cet_style(normalized, level, question_type, slot, errors)
 
         if errors:
             raise QuestionSetValidationError(errors)
@@ -243,6 +249,66 @@ class CETQuestionValidator:
                 errors.append(f"vocabulary 第 {index} 项 example_en 必须为英文")
             if not self._contains_cjk(item.get("meaning_zh", "")):
                 errors.append(f"vocabulary 第 {index} 项 meaning_zh 应提供中文释义")
+
+    def _validate_answer_explanation_alignment(
+        self,
+        payload: dict[str, Any],
+        question_type: QuestionType,
+        errors: list[str],
+    ) -> None:
+        if question_type in {QuestionType.WRITING, QuestionType.TRANSLATION}:
+            return
+
+        questions = payload.get("questions", [])
+        answer_key = payload.get("answer_key", [])
+        explanations = payload.get("analysis", {}).get("item_explanations", [])
+        if not questions or not answer_key or not explanations:
+            return
+
+        if len(answer_key) != len(explanations):
+            errors.append("answer_key 与 analysis.item_explanations 数量必须一致")
+            return
+
+        question_index = {
+            str(question.get("id", "")).strip(): index
+            for index, question in enumerate(questions)
+            if isinstance(question, dict)
+        }
+        for explanation in explanations:
+            if not isinstance(explanation, dict):
+                continue
+            question_id = str(explanation.get("question_id", "")).strip()
+            if question_id not in question_index:
+                continue
+            index = question_index[question_id]
+            expected_answer = str(answer_key[index]).strip().upper()
+            explanation_answer = str(explanation.get("correct_answer", "")).strip().upper()
+            if explanation_answer != expected_answer:
+                errors.append(
+                    f"{question_id} 的 answer_key 与 analysis.item_explanations.correct_answer 不一致"
+                )
+            explanation_text = str(explanation.get("explanation", "")).strip()
+            explicit_option = self._extract_explicit_option_reference(explanation_text)
+            if explicit_option and explicit_option != expected_answer:
+                errors.append(
+                    f"{question_id} 的解析文本显式指向 {explicit_option}，但 answer_key 为 {expected_answer}"
+                )
+
+    @staticmethod
+    def _extract_explicit_option_reference(text: str) -> str | None:
+        patterns = [
+            r"选项\s*([A-O])",
+            r"([A-O])\s*项",
+            r"答案\s*[:：]?\s*([A-O])",
+            r"应选\s*([A-O])",
+            r"对应\s*([A-O])",
+            r"option\s*([A-O])",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+        return None
 
     def _validate_banked_cloze(
         self,
@@ -472,3 +538,102 @@ class CETQuestionValidator:
             errors.append("翻译题参考译文必须为英文，不应包含中文")
         if len(payload.get("rubric_focus", [])) < 4:
             errors.append("翻译题 rubric_focus 至少应包含 4 个评分维度")
+
+    def _validate_cet_style(
+        self,
+        payload: dict[str, Any],
+        level: Level,
+        question_type: QuestionType,
+        slot: int | None,
+        errors: list[str],
+    ) -> None:
+        if question_type in {
+            QuestionType.BANKED_CLOZE,
+            QuestionType.LONG_READING,
+            QuestionType.CAREFUL_READING,
+        }:
+            self._validate_objective_passage_style(payload, errors)
+        if question_type is QuestionType.CAREFUL_READING:
+            self._validate_careful_reading_stem_style(payload, level, slot, errors)
+        if question_type is QuestionType.WRITING:
+            self._validate_writing_prompt_style(payload, level, errors)
+        if question_type is QuestionType.TRANSLATION:
+            self._validate_translation_source_style(payload, errors)
+
+    def _validate_objective_passage_style(
+        self,
+        payload: dict[str, Any],
+        errors: list[str],
+    ) -> None:
+        paragraphs = payload.get("passage", {}).get("paragraphs", [])
+        joined = " ".join(paragraphs).strip()
+        if not joined:
+            return
+        lower = joined.lower()
+        if lower.count('"') + lower.count("'") >= 12:
+            errors.append("客观题文章不应以大量对话或引语推动内容，应更接近 CET 常见说明文/评论文来源")
+        forbidden_markers = [
+            "dear diary",
+            "once upon a time",
+            "chapter one",
+            "i still remember the day",
+            "let me tell you",
+            "dear readers",
+            "click here",
+        ]
+        if any(marker in lower for marker in forbidden_markers):
+            errors.append("客观题文章文体过于像故事、日记或博客，不符合 CET 常见阅读来源风格")
+
+    def _validate_careful_reading_stem_style(
+        self,
+        payload: dict[str, Any],
+        level: Level,
+        slot: int | None,
+        errors: list[str],
+    ) -> None:
+        prompts = [str(item.get("prompt", "")).strip().lower() for item in payload.get("questions", [])]
+        if not prompts:
+            return
+        if level is Level.CET4 and slot == 1:
+            markers = ("study", "experiment", "research", "researcher", "participants", "finding", "result")
+            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
+                errors.append("仔细阅读 1（CET4）题干应更贴近研究/实验/结果型问法")
+        elif level is Level.CET4 and slot == 2:
+            markers = ("trend", "reason", "reaction", "suggest", "attitude", "consumer")
+            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
+                errors.append("仔细阅读 2（CET4）题干应更贴近趋势/原因/态度/建议型问法")
+        elif level is Level.CET6 and slot == 1:
+            markers = ("motive", "consequence", "strategy", "expansion", "comparison", "report")
+            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
+                errors.append("仔细阅读 1（CET6）题干应更贴近商业/策略/后果/报告型问法")
+        elif level is Level.CET6 and slot == 2:
+            markers = ("infer", "imply", "cite", "attitude", "stance", "critical", "skeptical")
+            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
+                errors.append("仔细阅读 2（CET6）题干应更贴近推断/例证目的/态度型问法")
+
+    def _validate_writing_prompt_style(
+        self,
+        payload: dict[str, Any],
+        level: Level,
+        errors: list[str],
+    ) -> None:
+        task_prompt = str(payload.get("task_prompt", "")).strip().lower()
+        prompt_lines = [str(line).strip() for line in payload.get("passage", {}).get("paragraphs", []) if str(line).strip()]
+        if "write" not in task_prompt:
+            errors.append("写作题 task_prompt 应明确要求考生写作")
+        if "word" not in task_prompt:
+            errors.append("写作题 task_prompt 应体现字数要求")
+        if not 2 <= len(prompt_lines) <= 3:
+            errors.append("写作题题面应更接近 CET 常见 2-3 行提示结构")
+        joined = " ".join(prompt_lines).lower()
+        if level is Level.CET6 and not any(marker in joined for marker in ("for this part", "directions", "comment", "statement", "topic")):
+            errors.append("CET6 写作题面应更贴近句子引导或观点引导型命题格式")
+
+    def _validate_translation_source_style(
+        self,
+        payload: dict[str, Any],
+        errors: list[str],
+    ) -> None:
+        source_text = "".join(payload.get("passage", {}).get("paragraphs", []))
+        if "“" in source_text or "”" in source_text:
+            errors.append("翻译题原文不应过于依赖对白体或文学对话，应更接近 CET 常见说明性段落")
