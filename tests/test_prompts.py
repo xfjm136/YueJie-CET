@@ -170,7 +170,7 @@ class PromptTests(unittest.TestCase):
             None,
             None,
         )
-        self.assertIn("outline-led", writing["writing_mode"])
+        self.assertIn("situational", writing["writing_mode"])
         self.assertIn("Chinese culture", translation["translation_domain"])
 
     def test_postprocess_normalizes_careful_reading_options_and_skill_tags(self) -> None:

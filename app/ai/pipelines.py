@@ -187,6 +187,7 @@ class QuestionGenerationPipeline:
             "genre": self._genre_for(level, question_type, slot),
             "register": self._register_for(level, question_type, slot),
             "source_material_hint": self._source_material_hint(level, question_type, slot),
+            "writing_prompt_examples": self._writing_prompt_examples(level, question_type),
             "target_word_count": self._target_word_count(level, question_type),
             "word_count_guidance": self._strict_word_count_guidance(level, question_type),
             "skill_focus": self._skill_focus(level, question_type, slot),
@@ -252,16 +253,18 @@ class QuestionGenerationPipeline:
             min_words = 120 if level is Level.CET4 else 150
             max_words = 180 if level is Level.CET4 else 200
             style_hint = (
-                "Favor a practical campus or social topic, usually in an outline-led, situational, or short instruction-based CET4 style."
+                "Favor a practical campus or social topic, usually in a situational, survey-based, or opinion-expression CET4 style."
                 if level is Level.CET4
-                else "Favor a sentence-led, opinion-led, or phenomenon-comment argumentative CET6 style with a slightly more abstract issue."
+                else "Favor a sentence-led, saying-comment, or opinion-led argumentative CET6 style with a slightly more abstract issue."
             )
             return (
                 f"CET writing task. Write an English essay of at least {min_words} words but no more than {max_words} words. "
                 f"{style_hint} "
                 "Provide an exam-style task prompt in English, 2-3 short instruction lines, a high-scoring sample essay, and rubric focus tags. "
-                "For CET4, prefer prompts that look like short outline tasks or practical campus/social instructions. "
-                "For CET6, prefer prompts that look like a quoted statement, a concise social phenomenon, or a viewpoint to comment on. "
+                "For CET4, prefer prompts that look like a short campus/social situation, a survey request, or a practical opinion-writing task. "
+                "For CET6, prefer prompts that look like a quoted statement, a concise social observation, or a viewpoint to comment on. "
+                "Do not use explicit numbered outlines such as 1., 2., 3. in the prompt lines. "
+                "Do not turn the prompt into a detailed scaffold with sub-questions; keep it compact like real CET writing tasks. "
                 "No objective questions, options, or answer_key should be included."
             )
         if question_type is QuestionType.TRANSLATION:
@@ -362,9 +365,11 @@ class QuestionGenerationPipeline:
             "- For long reading, every item prompt must be a statement rather than a question and must not include A./B./C. labels.\n"
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
-            "- For writing, produce a CET-style prompt format such as an outline-led topic, a short situational instruction, or a sentence-led argumentative task as appropriate to the level.\n"
+            "- For writing, produce a CET-style prompt format such as a short situational instruction, a survey/opinion task, a quoted statement, or a sentence-led argumentative task as appropriate to the level.\n"
             "- For CET4 writing, the prompt should look closer to practical campus/social essay instructions than to abstract philosophical debate.\n"
             "- For CET6 writing, the prompt should look closer to a short statement/comment/opinion task than to a basic school composition title.\n"
+            "- Do not use explicit numbered outlines like 1., 2., 3. or detailed multi-point Chinese-style writing hints in the prompt lines.\n"
+            "- Keep writing prompts compact. Avoid multi-step scaffolds or teacher-style classroom instructions.\n"
             "- For translation, provide a Chinese source passage on Chinese culture, history, society, development, education, ecology, or technology as appropriate to the level.\n"
             "- Do not write in a dramatic, fictional, or conversational blog style.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
@@ -502,11 +507,19 @@ class QuestionGenerationPipeline:
         ]
         normalized["min_response_words"] = int(normalized.get("min_response_words", 0) or 0)
         normalized["max_response_words"] = int(normalized.get("max_response_words", 0) or 0)
+        if question_type is QuestionType.WRITING:
+            normalized["task_prompt"] = self._normalize_writing_task_prompt(
+                normalized.get("task_prompt", ""),
+                normalized.get("title", ""),
+                level,
+            )
 
         passage = dict(normalized.get("passage", {}))
         paragraphs = [str(item).strip() for item in passage.get("paragraphs", []) if str(item).strip()]
         if question_type is QuestionType.LONG_READING:
             paragraphs = self._normalize_long_reading_paragraphs(paragraphs)
+        if question_type is QuestionType.WRITING:
+            paragraphs = self._normalize_writing_prompt_lines(paragraphs)
         passage["paragraphs"] = paragraphs
         passage["title"] = str(passage.get("title", normalized.get("title", ""))).strip()
         normalized["passage"] = passage
@@ -687,6 +700,29 @@ class QuestionGenerationPipeline:
             content = match.group(2).strip() if match else raw
             normalized.append(f"{expected_letters[index]}. {content}")
         return normalized
+
+    @staticmethod
+    def _normalize_writing_prompt_lines(paragraphs: list[str]) -> list[str]:
+        normalized: list[str] = []
+        cleaned = []
+        for paragraph in paragraphs:
+            line = re.sub(r"^\s*\d+\s*[\.\):\-]\s*", "", paragraph).strip()
+            if line:
+                cleaned.append(line)
+        return cleaned[:3]
+
+    @staticmethod
+    def _normalize_writing_task_prompt(raw: Any, title: str, level: Level) -> str:
+        min_words = 120 if level is Level.CET4 else 150
+        max_words = 180 if level is Level.CET4 else 200
+        text = str(raw).strip()
+        if text.lower().startswith("for this part"):
+            return text
+        topic = title.strip() or "the following topic"
+        return (
+            f"For this part, you are allowed 30 minutes to write a short essay on {topic}. "
+            f"You should write at least {min_words} words but no more than {max_words} words."
+        )
 
     @staticmethod
     def _default_test_tips(question_type: QuestionType) -> list[str]:
@@ -1193,7 +1229,7 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.WRITING:
             return [
                 "one short exam instruction block",
-                "2-3 prompt lines in English with clear CET writing-task shape",
+                "1-2 prompt lines in English with clear CET writing-task shape",
                 "one high-scoring sample essay and rubric focus tags",
             ]
         if question_type is QuestionType.TRANSLATION:
@@ -1245,6 +1281,7 @@ class QuestionGenerationPipeline:
                 "the sample essay should be coherent, natural, and score in the upper CET band",
                 "the prompt should favor practical social, campus, or technology themes",
                 "the prompt format itself should resemble CET writing instructions rather than a generic composition title",
+                "avoid numbered outlines or overly explicit three-point writing scaffolds",
             ]
         if question_type is QuestionType.TRANSLATION:
             return [
@@ -1325,10 +1362,26 @@ class QuestionGenerationPipeline:
         if question_type is not QuestionType.WRITING:
             return ""
         return (
-            "mainly outline-led or situational short essay, with occasional practical campus/social writing flavor"
+            "mainly situational, survey-based, or short opinion-expression writing"
             if level is Level.CET4
-            else "mainly sentence-led or opinion-led argumentative writing, sometimes phenomenon-comment or comparison-choice in tone"
+            else "mainly sentence-led, saying-comment, or viewpoint-comment argumentative writing"
         )
+
+    @staticmethod
+    def _writing_prompt_examples(level: Level, question_type: QuestionType) -> list[str]:
+        if question_type is not QuestionType.WRITING:
+            return []
+        if level is Level.CET4:
+            return [
+                "A short campus or social situation followed by 'Write an essay to express your views.'",
+                "A simple opinion-writing instruction about study, campus life, habits, or responsibility.",
+                "A survey- or activity-related practical topic without numbered sub-points.",
+            ]
+        return [
+            "A saying or statement, followed by 'Write an essay to comment on this saying/view.'",
+            "A short social observation or viewpoint, followed by an argumentative comment task.",
+            "A compact sentence-led topic without numbered sub-points or classroom-style scaffolding.",
+        ]
 
     @staticmethod
     def _translation_domain(level: Level, question_type: QuestionType) -> str:
@@ -1487,7 +1540,7 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.WRITING:
             return (
                 [
-                    "regular reading in the digital age",
+                    "reading habits and independent learning",
                     "exercise and healthy university life",
                     "volunteering and personal growth",
                     "time management and study efficiency",
@@ -1497,10 +1550,6 @@ class QuestionGenerationPipeline:
                     "campus service and student responsibility",
                     "how to handle stress in college life",
                     "the importance of teamwork in college",
-                    "how to improve study efficiency",
-                    "the value of volunteering for young people",
-                    "maintaining mental and physical balance at university",
-                    "using social media wisely",
                 ]
                 if level is Level.CET4
                 else [
@@ -1514,10 +1563,6 @@ class QuestionGenerationPipeline:
                     "individual choice and social responsibility",
                     "the value of patience in a fast-moving world",
                     "efficiency and depth in the information age",
-                    "innovation and the limits of convenience",
-                    "public responsibility in online expression",
-                    "whether technology strengthens or weakens human judgment",
-                    "the relationship between success and resilience",
                 ]
             )
         if question_type is QuestionType.TRANSLATION:

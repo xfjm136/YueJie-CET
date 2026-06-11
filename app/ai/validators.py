@@ -623,15 +623,10 @@ class CETQuestionValidator:
             errors.append("写作题 task_prompt 应明确要求考生写作")
         if "word" not in task_prompt:
             errors.append("写作题 task_prompt 应体现字数要求")
-        if not 2 <= len(prompt_lines) <= 3:
-            errors.append("写作题题面应更接近 CET 常见 2-3 行提示结构")
-        joined = " ".join(prompt_lines).lower()
-        if level is Level.CET4:
-            if not any(marker in task_prompt for marker in ("for this part", "you are allowed", "write a short essay")):
-                errors.append("CET4 写作 task_prompt 应更贴近标准考试指令格式")
-        else:
-            if not any(marker in joined for marker in ("statement", "comment", "say", "view", "opinion", "phenomenon", "topic")):
-                errors.append("CET6 写作题面应更贴近句子引导、观点评论或现象评论型命题格式")
+        if not 1 <= len(prompt_lines) <= 3:
+            errors.append("写作题题面应保持为简短的 1-3 行英文提示")
+        if any(re.match(r"^\s*\d+\s*[\.\):\-]", line) for line in prompt_lines):
+            errors.append("写作题题面不应使用 1./2./3. 这类详细编号式提示")
 
     def _validate_translation_source_style(
         self,
