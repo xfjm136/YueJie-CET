@@ -5105,7 +5105,7 @@ impl YueJieRustApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(5),
-                Constraint::Length(5),
+                Constraint::Length(8),
                 Constraint::Min(10),
             ])
             .split(area);
@@ -5141,7 +5141,7 @@ impl YueJieRustApp {
 
         let blank_rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Length(2)])
+            .constraints([Constraint::Length(4), Constraint::Length(4)])
             .split(chunks[1]);
         for row in 0..2 {
             let row_chunks = Layout::default()
@@ -5163,9 +5163,9 @@ impl YueJieRustApp {
                     .map_or(" ".to_string(), |value| blank_or_value(value));
                 let selected = practice.selected_blank == index;
                 let text = if answer.trim() == "__" {
-                    format!("{:02} [__]", index + 1)
+                    format!("{:02}\n[__]", index + 1)
                 } else {
-                    format!("{:02} [{}] 已填", index + 1, answer)
+                    format!("{:02}\n[{}]", index + 1, answer)
                 };
                 self.draw_action_button(
                     frame,
@@ -6926,7 +6926,7 @@ fn timer_glyphs() -> HashMap<char, [&'static str; 5]> {
         ('4', ["╻ ╻", "┃ ┃", "┗━┫", "  ┃", "  ╹"]),
         ('5', ["┏━┓", "┃  ", "┗━┓", "  ┃", "┗━┛"]),
         ('6', ["┏━┓", "┃  ", "┣━┓", "┃ ┃", "┗━┛"]),
-        ('7', ["┏━┓", "  ┃", " ╻┃", "  ┃", "  ╹"]),
+        ('7', ["┏━┓", "  ┃", "  ┃", "  ┃", "  ╹"]),
         ('8', ["┏━┓", "┃ ┃", "┣━┫", "┃ ┃", "┗━┛"]),
         ('9', ["┏━┓", "┃ ┃", "┗━┫", "  ┃", "┗━┛"]),
         (':', ["   ", " • ", "   ", " • ", "   "]),
