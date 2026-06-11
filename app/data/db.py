@@ -493,8 +493,9 @@ class Database:
         avg_duration = int(sum(row["duration_seconds"] for row in recent) / len(recent)) if recent else 0
         type_counter = Counter(row["question_type"] for row in history)
         most_common_type = type_counter.most_common(1)[0][0] if type_counter else None
-        accuracy_series = [round(row["accuracy"] * 100, 2) for row in reversed(recent)]
-        duration_series = [int(row["duration_seconds"]) for row in reversed(recent)]
+        trend_window = history[:200]
+        accuracy_series = [round(row["accuracy"] * 100, 2) for row in reversed(trend_window)]
+        duration_series = [int(row["duration_seconds"]) for row in reversed(trend_window)]
         return {
             "total_attempts": total_attempts,
             "total_cet4": total_cet4,

@@ -26,7 +26,8 @@ use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::symbols;
 use ratatui::text::Text;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
+    Axis, Block, BorderType, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, ListState,
+    Paragraph, Sparkline, Wrap,
 };
 use ratatui::{Frame, Terminal};
 use serde::Deserialize;
@@ -2609,17 +2610,12 @@ impl YueJieRustApp {
             .latest_weakness_updated_at
             .clone()
             .unwrap_or_else(|| "薄弱项暂无更新".to_string());
-        let accuracy_series: Vec<u64> = self
-            .overview
-            .recent_accuracy_series
-            .iter()
-            .map(|value| value.max(0.0).round() as u64)
-            .collect();
-        let duration_series: Vec<u64> = self
+        let accuracy_series = self.overview.recent_accuracy_series.clone();
+        let duration_series: Vec<f64> = self
             .overview
             .recent_duration_series
             .iter()
-            .map(|value| (*value).max(0) as u64)
+            .map(|value| (*value).max(0) as f64)
             .collect();
         let outer = centered_rect(95, 94, area);
         let chunks = Layout::default()
@@ -2782,23 +2778,23 @@ impl YueJieRustApp {
                 Constraint::Min(4),
             ])
             .split(bottom[0]);
-        frame.render_widget(
-            Sparkline::default()
-                .block(simple_block("正确率走势", palette))
-                .data(&accuracy_series)
-                .style(Style::default().fg(palette.success))
-                .absent_value_style(Style::default().fg(palette.muted))
-                .bar_set(symbols::bar::NINE_LEVELS),
+        self.draw_line_trend_card(
+            frame,
             trend_rows[0],
+            palette,
+            "正确率走势",
+            &accuracy_series,
+            palette.success,
+            Some(100.0),
         );
-        frame.render_widget(
-            Sparkline::default()
-                .block(simple_block("用时走势", palette))
-                .data(&duration_series)
-                .style(Style::default().fg(palette.warning))
-                .absent_value_style(Style::default().fg(palette.muted))
-                .bar_set(symbols::bar::NINE_LEVELS),
+        self.draw_line_trend_card(
+            frame,
             trend_rows[1],
+            palette,
+            "用时走势",
+            &duration_series,
+            palette.warning,
+            None,
         );
         frame.render_widget(
             Paragraph::new(Text::from(vec![
@@ -5498,6 +5494,95 @@ impl YueJieRustApp {
         }
     }
 
+    fn draw_line_trend_card(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: Palette,
+        title: &str,
+        series: &[f64],
+        color: Color,
+        fixed_upper_bound: Option<f64>,
+    ) {
+        let block = simple_block(title, palette);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width < 3 || inner.height < 2 {
+            return;
+        }
+
+        let max_points = inner.width.saturating_sub(1) as usize;
+        let sampled = sample_series_for_width(series, max_points.max(1));
+        if sampled.is_empty() {
+            frame.render_widget(
+                Paragraph::new("暂无走势数据")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(palette.muted)),
+                inner,
+            );
+            return;
+        }
+
+        let max_y = fixed_upper_bound.unwrap_or_else(|| {
+            sampled
+                .iter()
+                .map(|(_, value)| *value)
+                .fold(1.0f64, f64::max)
+                .max(1.0)
+        });
+        let upper = if max_y <= 0.0 { 1.0 } else { max_y * 1.08 };
+        let last_value = sampled.last().map(|(_, value)| *value).unwrap_or(0.0);
+        let chart_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        let chart_style = Style::default().bg(palette.panel);
+        frame.render_widget(
+            Paragraph::new(String::new()).style(chart_style),
+            chart_area[0],
+        );
+
+        let dataset = Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(color).bg(palette.panel))
+            .data(&sampled);
+        frame.render_widget(
+            Chart::new(vec![dataset])
+                .style(chart_style)
+                .x_axis(
+                    Axis::default()
+                        .bounds([0.0, (sampled.len().saturating_sub(1)) as f64])
+                        .style(Style::default().fg(palette.muted).bg(palette.panel))
+                        .labels(Vec::<Span>::new()),
+                )
+                .y_axis(
+                    Axis::default()
+                        .bounds([0.0, upper])
+                        .style(Style::default().fg(palette.muted).bg(palette.panel))
+                        .labels(Vec::<Span>::new()),
+                ),
+            chart_area[0],
+        );
+
+        let footer = if series.len() > sampled.len() {
+            format!(
+                "显示最近 {} / {} 次 | 最新 {:.1}",
+                sampled.len(),
+                series.len(),
+                last_value
+            )
+        } else {
+            format!("显示最近 {} 次 | 最新 {:.1}", sampled.len(), last_value)
+        };
+        frame.render_widget(
+            Paragraph::new(footer)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(palette.muted).bg(palette.panel)),
+            chart_area[1],
+        );
+    }
+
     fn draw_type_card(
         &mut self,
         frame: &mut Frame,
@@ -6341,6 +6426,37 @@ fn mini_ratio_bar(ratio: f64, width: usize) -> String {
     let filled = (clamped * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn sample_series_for_width(series: &[f64], max_points: usize) -> Vec<(f64, f64)> {
+    if series.is_empty() || max_points == 0 {
+        return Vec::new();
+    }
+    if series.len() <= max_points {
+        return series
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (index as f64, *value))
+            .collect();
+    }
+
+    let bucket = series.len() as f64 / max_points as f64;
+    let mut sampled = Vec::with_capacity(max_points);
+    for index in 0..max_points {
+        let start = (index as f64 * bucket).floor() as usize;
+        let mut end = (((index + 1) as f64) * bucket).floor() as usize;
+        if end <= start {
+            end = (start + 1).min(series.len());
+        }
+        let slice = &series[start.min(series.len() - 1)..end.min(series.len())];
+        let avg = if slice.is_empty() {
+            series[start.min(series.len() - 1)]
+        } else {
+            slice.iter().sum::<f64>() / slice.len() as f64
+        };
+        sampled.push((index as f64, avg));
+    }
+    sampled
 }
 
 fn submit_timeout_for_answers(answers: &HashMap<String, String>) -> Duration {
