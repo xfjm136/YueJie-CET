@@ -4926,18 +4926,17 @@ impl YueJieRustApp {
 
         let mut prompt_lines = vec![
             Line::from(Span::styled(
-                format!(
-                    "{}  {}",
-                    format_question_group_label(
-                        &practice.question_set.question_type,
-                        practice.question_set.slot,
-                    ),
-                    format_question_label(
-                        &practice.question_set.question_type,
-                        practice.question_set.slot,
-                    )
+                format_question_group_label(
+                    &practice.question_set.question_type,
+                    practice.question_set.slot,
                 ),
                 title_style(palette),
+            )),
+            Line::from(Span::styled(
+                subjective_exam_heading(&practice.question_set.question_type),
+                Style::default()
+                    .fg(palette.text)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(practice.question_set.task_prompt.clone()),
             Line::from(""),
@@ -6500,6 +6499,14 @@ fn format_directions(question_type: &str) -> &'static str {
             "Directions: For this part, you are allowed 30 minutes to translate the following Chinese passage into English."
         }
         _ => "Directions: Read the passage and complete the questions below.",
+    }
+}
+
+fn subjective_exam_heading(question_type: &str) -> &'static str {
+    match question_type {
+        "writing" => "Writing (30 minutes)",
+        "translation" => "Translation (30 minutes)",
+        _ => "",
     }
 }
 

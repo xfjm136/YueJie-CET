@@ -491,8 +491,8 @@ class CETQuestionValidator:
             errors.append("写作题必须提供 task_prompt")
         if not payload.get("reference_answer"):
             errors.append("写作题必须提供 reference_answer")
-        if len(payload["passage"]["paragraphs"]) < 2:
-            errors.append("写作题题面说明至少应包含 2 行英文提示")
+        if len(payload["passage"]["paragraphs"]) != 1:
+            errors.append("写作题题面应为 1 段完整英文题干")
         min_words = self.WRITING_MIN_WORDS[level]
         max_words = self.WRITING_MAX_WORDS[level]
         if payload.get("min_response_words", 0) < min_words:
@@ -619,10 +619,11 @@ class CETQuestionValidator:
     ) -> None:
         task_prompt = str(payload.get("task_prompt", "")).strip().lower()
         prompt_lines = [str(line).strip() for line in payload.get("passage", {}).get("paragraphs", []) if str(line).strip()]
-        if "write" not in task_prompt:
-            errors.append("写作题 task_prompt 应明确要求考生写作")
-        if "word" not in task_prompt:
-            errors.append("写作题 task_prompt 应体现字数要求")
+        combined_prompt = " ".join([task_prompt, *prompt_lines]).lower()
+        if "write" not in combined_prompt:
+            errors.append("写作题题面应明确要求考生写作")
+        if "word" not in combined_prompt:
+            errors.append("写作题题面应体现字数要求")
         if not 1 <= len(prompt_lines) <= 3:
             errors.append("写作题题面应保持为简短的 1-3 段英文提示")
         if any(re.match(r"^\s*\d+\s*[\.\):\-]", line) for line in prompt_lines):

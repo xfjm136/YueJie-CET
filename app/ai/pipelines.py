@@ -253,16 +253,16 @@ class QuestionGenerationPipeline:
             min_words = 120 if level is Level.CET4 else 150
             max_words = 180 if level is Level.CET4 else 200
             style_hint = (
-                "Favor a practical campus or social topic, usually in a situational, survey-based, or opinion-expression CET4 style."
+                "Favor a practical campus or social topic, usually in a CET4 exam style such as 'Suppose ... You are now to write ...' or another short official-looking instruction."
                 if level is Level.CET4
-                else "Favor a sentence-led, saying-comment, or opinion-led argumentative CET6 style with a slightly more abstract issue."
+                else "Favor a sentence-led CET6 style such as 'write an essay that begins with the sentence ...', or another short official exam instruction built around a statement or saying."
             )
             return (
                 f"CET writing task. Write an English essay of at least {min_words} words but no more than {max_words} words. "
                 f"{style_hint} "
                 "Provide an exam-style task prompt in English, one brief content prompt paragraph, a high-scoring sample essay, and rubric focus tags. "
-                "For CET4, prefer prompts that look like a short campus/social situation, a survey request, or a practical opinion-writing task. "
-                "For CET6, prefer prompts that look like a quoted statement, a concise social observation, or a viewpoint to comment on. "
+                "For CET4, strongly prefer prompts that look like short official exam instructions built around a campus or social situation, often beginning with 'Suppose ...' and continuing with 'You are now to write ...'. "
+                "For CET6, strongly prefer prompts that look like official sentence-led tasks such as 'write an essay that begins with the sentence ...', followed by brief official guidance. "
                 "Keep the visible content prompt brief, like real CET tasks, rather than expanding it into a long teacher-style explanation. "
                 "The visible content prompt should usually be one short paragraph rather than two separate blocks. "
                 "Do not use explicit numbered outlines such as 1., 2., 3. in the prompt lines. "
@@ -368,8 +368,8 @@ class QuestionGenerationPipeline:
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
             "- For writing, produce a CET-style prompt format such as a short situational instruction, a survey/opinion task, a quoted statement, or a sentence-led argumentative task as appropriate to the level.\n"
-            "- For CET4 writing, the prompt should look closer to practical campus/social essay instructions than to abstract philosophical debate.\n"
-            "- For CET6 writing, the prompt should look closer to a short statement/comment/opinion task than to a basic school composition title.\n"
+            "- For CET4 writing, the prompt should look closer to official exam wording such as 'Suppose ... You are now to write ...' than to abstract philosophical debate.\n"
+            "- For CET6 writing, the prompt should often look like an official sentence-led task built around a quoted sentence, followed by very brief guidance.\n"
             "- The visible content prompt should normally be one short paragraph only.\n"
             "- Do not use explicit numbered outlines like 1., 2., 3. or detailed multi-point Chinese-style writing hints in the prompt lines.\n"
             "- Keep writing prompts compact. Avoid multi-step scaffolds or teacher-style classroom instructions.\n"
@@ -522,7 +522,11 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.LONG_READING:
             paragraphs = self._normalize_long_reading_paragraphs(paragraphs)
         if question_type is QuestionType.WRITING:
-            paragraphs = self._normalize_writing_prompt_lines(paragraphs)
+            paragraphs = self._normalize_writing_prompt_lines(
+                paragraphs,
+                normalized.get("title", ""),
+                level,
+            )
         passage["paragraphs"] = paragraphs
         passage["title"] = str(passage.get("title", normalized.get("title", ""))).strip()
         normalized["passage"] = passage
@@ -705,29 +709,60 @@ class QuestionGenerationPipeline:
         return normalized
 
     @staticmethod
-    def _normalize_writing_prompt_lines(paragraphs: list[str]) -> list[str]:
-        normalized: list[str] = []
+    def _normalize_writing_prompt_lines(
+        paragraphs: list[str],
+        title: str,
+        level: Level,
+    ) -> list[str]:
         cleaned = []
+        title_normalized = title.strip().lower()
         for paragraph in paragraphs:
             line = re.sub(r"^\s*\d+\s*[\.\):\-]\s*", "", paragraph).strip()
-            if line:
+            if line and line.strip().lower() != title_normalized:
                 cleaned.append(line)
+        min_words = 120 if level is Level.CET4 else 150
+        max_words = 180 if level is Level.CET4 else 200
         if not cleaned:
-            return normalized
-        return cleaned[:2]
+            topic = title.strip() or "the following topic"
+            return [
+                f"Write an essay on {topic}. You should write at least {min_words} words but no more than {max_words} words."
+            ]
+        content = " ".join(cleaned).strip()
+        content = re.sub(
+            r"\bWrite about \d+ words but no more than \d+ words\.?",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip()
+        content = re.sub(
+            r"\bWrite about \d+ words\.?",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip()
+        content = re.sub(
+            r"\bWrite an essay of about \d+\s*[–-]\s*\d+ words\.?",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        ).strip()
+        if "you should write" not in content.lower():
+            content = (
+                f"{content} You should write at least {min_words} words but no more than {max_words} words."
+            ).strip()
+        if (
+            level is Level.CET6
+            and "begins with the sentence" in content.lower()
+            and "you should copy the sentence given in quotes" not in content.lower()
+        ):
+            content = (
+                f"{content} You should copy the sentence given in quotes at the beginning of your essay."
+            ).strip()
+        return [content]
 
     @staticmethod
     def _normalize_writing_task_prompt(raw: Any, title: str, level: Level) -> str:
-        min_words = 120 if level is Level.CET4 else 150
-        max_words = 180 if level is Level.CET4 else 200
-        text = str(raw).strip()
-        if text.lower().startswith("for this part"):
-            return text
-        topic = title.strip() or "the following topic"
-        return (
-            f"For this part, you are allowed 30 minutes to write a short essay on {topic}. "
-            f"You should write at least {min_words} words but no more than {max_words} words."
-        )
+        return "Directions:"
 
     @staticmethod
     def _default_test_tips(question_type: QuestionType) -> list[str]:
@@ -1367,9 +1402,9 @@ class QuestionGenerationPipeline:
         if question_type is not QuestionType.WRITING:
             return ""
         return (
-            "mainly situational, survey-based, or short opinion-expression writing"
+            "mainly short official exam instructions, especially CET4 forms like 'Suppose ... You are now to write ...'"
             if level is Level.CET4
-            else "mainly sentence-led, saying-comment, or viewpoint-comment argumentative writing"
+            else "mainly official sentence-led CET6 writing, especially forms like 'write an essay that begins with the sentence ...'"
         )
 
     @staticmethod
@@ -1378,14 +1413,14 @@ class QuestionGenerationPipeline:
             return []
         if level is Level.CET4:
             return [
-                "A short campus or social situation followed by 'Write an essay to express your views.'",
-                "A simple opinion-writing instruction about study, campus life, habits, or responsibility.",
-                "A survey- or activity-related practical topic without numbered sub-points.",
+                "A short campus or social situation beginning with 'Suppose ...' and followed by 'You are now to write ...'.",
+                "A compact official-looking instruction about a practical campus or social issue.",
+                "A short CET4 task paragraph without numbered sub-points.",
             ]
         return [
-            "A saying or statement, followed by 'Write an essay to comment on this saying/view.'",
-            "A short social observation or viewpoint, followed by an argumentative comment task.",
-            "A compact sentence-led topic without numbered sub-points or classroom-style scaffolding.",
+            "A sentence-led official task such as 'For this part, you are allowed 30 minutes to write an essay that begins with the sentence ...'.",
+            "A quoted saying or statement followed by brief official guidance on commenting or citing examples.",
+            "A compact CET6 prompt paragraph without numbered sub-points or classroom-style scaffolding.",
         ]
 
     @staticmethod

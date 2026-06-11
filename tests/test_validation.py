@@ -429,9 +429,7 @@ class ValidationTests(unittest.TestCase):
             "passage": {
                 "title": "Writing Task",
                 "paragraphs": [
-                    "Suppose your university is organizing a reading campaign.",
-                    "Write an essay on why independent thinking still matters in the age of AI.",
-                    "You may include examples from study and daily life.",
+                    "Suppose your university is organizing a reading campaign. You are now to write an essay on why independent thinking still matters in the age of AI. You will have 30 minutes to write the essay. You should write at least 120 words but no more than 180 words.",
                 ],
             },
             "questions": [],

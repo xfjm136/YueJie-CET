@@ -394,15 +394,11 @@ class MockQuestionFactory:
         min_words = 120 if level is Level.CET4 else 150
         prompt_lines = (
             [
-                "Suppose your university is organizing a campus reading campaign.",
-                "Write an essay to explain why regular reading still matters in the digital age.",
-                "You may include personal observation, examples, and practical suggestions.",
+                "Suppose your university is organizing a campus reading campaign. You are now to write an essay to explain why regular reading still matters in the digital age. You will have 30 minutes to write the essay. You should write at least 120 words but no more than 180 words.",
             ]
             if level is Level.CET4
             else [
-                "Suppose your university newspaper is collecting essays on technology and human learning.",
-                "Write an essay discussing how AI tools can support but not replace independent thinking.",
-                "You may refer to study habits, classroom practice, and long-term development.",
+                "For this part, you are allowed 30 minutes to write an essay that begins with the sentence \"Artificial intelligence can improve learning efficiency, but it should not replace independent thinking.\" You can make comments, cite examples or use your personal experiences to develop your essay. You should write at least 150 words but no more than 200 words. You should copy the sentence given in quotes at the beginning of your essay.",
             ]
         )
         reference = (
@@ -433,8 +429,7 @@ class MockQuestionFactory:
                 VocabularyItem("substitute", "substitute", level.value, "替代品"),
             ],
             task_prompt=(
-                f"For this part, you are allowed 30 minutes to write an essay of no less than {min_words} words "
-                "according to the task given below."
+                "Directions:"
             ),
             reference_answer=reference,
             rubric_focus=["content_relevance", "coherence", "grammar", "lexical_accuracy"],

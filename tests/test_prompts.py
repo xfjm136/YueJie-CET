@@ -170,7 +170,7 @@ class PromptTests(unittest.TestCase):
             None,
             None,
         )
-        self.assertIn("situational", writing["writing_mode"])
+        self.assertIn("official exam instructions", writing["writing_mode"])
         self.assertIn("Chinese culture", translation["translation_domain"])
 
     def test_postprocess_normalizes_careful_reading_options_and_skill_tags(self) -> None:
@@ -255,7 +255,7 @@ class PromptTests(unittest.TestCase):
             QuestionType.WRITING,
             None,
         )
-        self.assertEqual(len(normalized["passage"]["paragraphs"]), 2)
+        self.assertEqual(len(normalized["passage"]["paragraphs"]), 1)
         self.assertFalse(normalized["passage"]["paragraphs"][0].startswith("1."))
 
 
