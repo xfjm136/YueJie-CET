@@ -201,6 +201,28 @@ class SentenceRewrite:
 
 
 @dataclass
+class SentenceAnnotation:
+    original_sentence: str
+    strengths_zh: str = ""
+    issues_zh: str = ""
+    revised_sentence: str = ""
+    skill_tag: str = "general"
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SentenceAnnotation":
+        return cls(
+            original_sentence=data.get("original_sentence", ""),
+            strengths_zh=data.get("strengths_zh", ""),
+            issues_zh=data.get("issues_zh", ""),
+            revised_sentence=data.get("revised_sentence", ""),
+            skill_tag=data.get("skill_tag", "general"),
+        )
+
+
+@dataclass
 class SubjectiveEvaluation:
     score_15: float
     estimated_reported_score: float
@@ -209,6 +231,7 @@ class SubjectiveEvaluation:
     score_dimensions: list[ScoreDimension] = field(default_factory=list)
     wrong_words: list[WordCorrection] = field(default_factory=list)
     sentence_rewrites: list[SentenceRewrite] = field(default_factory=list)
+    sentence_annotations: list[SentenceAnnotation] = field(default_factory=list)
     high_score_version: str = ""
     weakness_tags: list[str] = field(default_factory=list)
 
@@ -230,6 +253,10 @@ class SubjectiveEvaluation:
             ],
             sentence_rewrites=[
                 SentenceRewrite.from_dict(item) for item in data.get("sentence_rewrites", [])
+            ],
+            sentence_annotations=[
+                SentenceAnnotation.from_dict(item)
+                for item in data.get("sentence_annotations", [])
             ],
             high_score_version=data.get("high_score_version", ""),
             weakness_tags=list(data.get("weakness_tags", [])),

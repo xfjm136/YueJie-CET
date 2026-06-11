@@ -271,6 +271,19 @@ struct SentenceRewrite {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct SentenceAnnotation {
+    original_sentence: String,
+    #[serde(default)]
+    strengths_zh: String,
+    #[serde(default)]
+    issues_zh: String,
+    #[serde(default)]
+    revised_sentence: String,
+    #[serde(default)]
+    skill_tag: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct SubjectiveEvaluation {
     score_15: f64,
     estimated_reported_score: f64,
@@ -282,6 +295,8 @@ struct SubjectiveEvaluation {
     wrong_words: Vec<WordCorrection>,
     #[serde(default)]
     sentence_rewrites: Vec<SentenceRewrite>,
+    #[serde(default)]
+    sentence_annotations: Vec<SentenceAnnotation>,
     #[serde(default)]
     high_score_version: String,
     #[serde(default)]
@@ -357,6 +372,7 @@ enum Screen {
     LevelSelect,
     TypeSelect,
     Generating,
+    Submitting,
     Practice,
     Result,
     History,
@@ -538,6 +554,25 @@ struct GeneratingTask {
     job_id: u64,
     started_at: Instant,
     receiver: Receiver<GenerationMessage>,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+enum SubmissionMessage {
+    Progress {
+        job_id: u64,
+        phase: String,
+        message: String,
+    },
+    Finished {
+        job_id: u64,
+        result: Result<AttemptResult, String>,
+    },
+}
+
+struct SubmittingTask {
+    job_id: u64,
+    started_at: Instant,
+    receiver: Receiver<SubmissionMessage>,
     cancel_flag: Arc<AtomicBool>,
 }
 
@@ -846,8 +881,190 @@ impl BackendBridge {
             "answers": answers,
             "is_history_retry": is_history_retry,
         });
-        let value = self.run_bridge(&["submit"], Some(payload))?;
+        let timeout = submit_timeout_for_answers(answers);
+        let value = self.run_bridge_with_timeout(&["submit"], Some(payload), timeout)?;
         Ok(serde_json::from_value(value)?)
+    }
+
+    fn stream_submit(
+        &self,
+        question_set_id: &str,
+        started_at: &str,
+        answers: &HashMap<String, String>,
+        is_history_retry: bool,
+        job_id: u64,
+        sender: Sender<SubmissionMessage>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<()> {
+        let payload = json!({
+            "question_set_id": question_set_id,
+            "started_at": started_at,
+            "answers": answers,
+            "is_history_retry": is_history_retry,
+        });
+        let mut command = Command::new(&self.python_bin);
+        command
+            .current_dir(&self.root)
+            .arg("-u")
+            .arg("-m")
+            .arg("app.bridge")
+            .arg("submit-live")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = command
+            .spawn()
+            .context("failed to start live submit command")?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("failed to open live submit stdin")?;
+            stdin.write_all(payload.to_string().as_bytes())?;
+        }
+
+        let stdout = child
+            .stdout
+            .take()
+            .context("failed to capture live submit stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("failed to capture live submit stderr")?;
+        let (line_tx, line_rx) = mpsc::channel::<Result<String, String>>();
+        let stdout_handle = std::thread::spawn(move || {
+            for raw_line in BufReader::new(stdout).lines() {
+                let _ = line_tx.send(raw_line.map_err(|err| err.to_string()));
+            }
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            let mut stderr_text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut stderr_text);
+            stderr_text
+        });
+
+        let mut saw_terminal_event = false;
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Ok(());
+            }
+
+            match line_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let value: Value = serde_json::from_str(&line)
+                        .with_context(|| format!("failed to parse live submit output: {}", line))?;
+                    match value
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                    {
+                        "progress" => {
+                            let phase = value
+                                .get("phase")
+                                .and_then(Value::as_str)
+                                .unwrap_or("progress")
+                                .to_string();
+                            let message = value
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("正在评分。")
+                                .to_string();
+                            let _ = sender.send(SubmissionMessage::Progress {
+                                job_id,
+                                phase,
+                                message,
+                            });
+                        }
+                        "result" => {
+                            let result_value = value
+                                .get("result")
+                                .cloned()
+                                .context("live submit result missing result")?;
+                            let attempt_result: AttemptResult =
+                                serde_json::from_value(result_value)?;
+                            let _ = sender.send(SubmissionMessage::Finished {
+                                job_id,
+                                result: Ok(attempt_result),
+                            });
+                            saw_terminal_event = true;
+                        }
+                        "error" => {
+                            let error = value
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .unwrap_or("bridge command failed")
+                                .to_string();
+                            let _ = sender.send(SubmissionMessage::Finished {
+                                job_id,
+                                result: Err(error),
+                            });
+                            saw_terminal_event = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(err)) => {
+                    let _ = sender.send(SubmissionMessage::Finished {
+                        job_id,
+                        result: Err(err),
+                    });
+                    saw_terminal_event = true;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {}
+            }
+
+            if let Some(status) = child.try_wait()? {
+                let _ = stdout_handle.join();
+                let stderr_text = stderr_handle.join().unwrap_or_default();
+                while let Ok(Ok(line)) = line_rx.try_recv() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let value: Value = serde_json::from_str(&line)
+                        .with_context(|| format!("failed to parse live submit output: {}", line))?;
+                    if let Some("result") = value.get("event").and_then(Value::as_str) {
+                        let result_value = value
+                            .get("result")
+                            .cloned()
+                            .context("live submit result missing result")?;
+                        let attempt_result: AttemptResult = serde_json::from_value(result_value)?;
+                        let _ = sender.send(SubmissionMessage::Finished {
+                            job_id,
+                            result: Ok(attempt_result),
+                        });
+                        saw_terminal_event = true;
+                    }
+                }
+                if !saw_terminal_event {
+                    if status.success() {
+                        let _ = sender.send(SubmissionMessage::Finished {
+                            job_id,
+                            result: Err("评分流程提前结束，未收到结果。".to_string()),
+                        });
+                    } else {
+                        let detail = if stderr_text.trim().is_empty() {
+                            "bridge command failed".to_string()
+                        } else {
+                            stderr_text.trim().to_string()
+                        };
+                        let _ = sender.send(SubmissionMessage::Finished {
+                            job_id,
+                            result: Err(detail),
+                        });
+                    }
+                }
+                return Ok(());
+            }
+        }
     }
 
     fn history(&self) -> Result<HistoryResponse> {
@@ -1150,6 +1367,11 @@ struct YueJieRustApp {
     generation_phase: String,
     generation_message: String,
     generation_log: Vec<String>,
+    submitting_task: Option<SubmittingTask>,
+    submission_sequence: u64,
+    submission_phase: String,
+    submission_message: String,
+    submission_log: Vec<String>,
     practice: Option<PracticeState>,
     result: Option<AttemptResult>,
     result_detail_scroll: u16,
@@ -1162,6 +1384,8 @@ struct YueJieRustApp {
     weakness_index: usize,
     vocabulary: Vec<VocabularyEntry>,
     vocabulary_index: usize,
+    result_action_index: usize,
+    review_action_index: usize,
     settings_focus: usize,
     pending_history_delete_attempt_id: Option<String>,
     should_quit: bool,
@@ -1193,6 +1417,11 @@ impl YueJieRustApp {
             generation_phase: String::from("idle"),
             generation_message: String::from("尚未开始生成。"),
             generation_log: Vec::new(),
+            submitting_task: None,
+            submission_sequence: 0,
+            submission_phase: String::from("idle"),
+            submission_message: String::from("尚未开始评分。"),
+            submission_log: Vec::new(),
             practice: None,
             result: None,
             result_detail_scroll: 0,
@@ -1205,6 +1434,8 @@ impl YueJieRustApp {
             weakness_index: 0,
             vocabulary: Vec::new(),
             vocabulary_index: 0,
+            result_action_index: 0,
+            review_action_index: 0,
             settings_focus: 0,
             pending_history_delete_attempt_id: None,
             should_quit: false,
@@ -1273,10 +1504,65 @@ impl YueJieRustApp {
                                         other => format!("题目来源：{}，现在开始作答。", other),
                                     };
                                     self.practice = Some(PracticeState::new(question_set, false));
+                                    self.result_action_index = 0;
                                     self.screen = Screen::Practice;
                                 }
                                 Err(message) => {
                                     self.screen = Screen::TypeSelect;
+                                    self.status_line = message;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(task) = &self.submitting_task {
+                let active_job_id = task.job_id;
+                let mut pending_messages = Vec::new();
+                while let Ok(message) = task.receiver.try_recv() {
+                    pending_messages.push(message);
+                }
+                for message in pending_messages {
+                    match message {
+                        SubmissionMessage::Progress {
+                            job_id,
+                            phase,
+                            message,
+                        } => {
+                            if job_id != active_job_id {
+                                continue;
+                            }
+                            self.submission_phase = phase;
+                            self.submission_message = message.clone();
+                            self.push_submission_log(message);
+                        }
+                        SubmissionMessage::Finished { job_id, result } => {
+                            if job_id != active_job_id {
+                                continue;
+                            }
+                            self.submitting_task = None;
+                            match result {
+                                Ok(result) => {
+                                    if let Some(practice) = &self.practice {
+                                        self.review = Some(ReviewBundle {
+                                            question_set: practice.question_set.clone(),
+                                            result: result.clone(),
+                                            answers: practice.answers.clone(),
+                                        });
+                                    }
+                                    self.review_back_screen = Screen::Result;
+                                    self.result = Some(result);
+                                    self.result_detail_scroll = 0;
+                                    self.result_action_index = 0;
+                                    self.review_action_index = 0;
+                                    self.status_line = String::from(
+                                        "Enter/1 查看解析，2 下一题，3 重做，4 题型，5 首页，PageUp/PageDown 可浏览摘要。",
+                                    );
+                                    self.screen = Screen::Result;
+                                }
+                                Err(message) => {
+                                    self.screen = Screen::Practice;
                                     self.status_line = message;
                                 }
                             }
@@ -1302,7 +1588,10 @@ impl YueJieRustApp {
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
-            } else if matches!(self.screen, Screen::Generating | Screen::Result) {
+            } else if matches!(
+                self.screen,
+                Screen::Generating | Screen::Submitting | Screen::Result
+            ) {
                 self.generating_tick = self.generating_tick.wrapping_add(1);
             }
         }
@@ -1324,6 +1613,7 @@ impl YueJieRustApp {
             Screen::LevelSelect => self.handle_level_key(key),
             Screen::TypeSelect => self.handle_type_key(key)?,
             Screen::Generating => {}
+            Screen::Submitting => {}
             Screen::Practice => self.handle_practice_key(key)?,
             Screen::Result => self.handle_result_key(key)?,
             Screen::History => self.handle_history_key(key)?,
@@ -1350,6 +1640,14 @@ impl YueJieRustApp {
                 self.generating_task = None;
                 self.open_type_screen()?;
                 self.status_line = String::from("已取消本次生成。");
+            }
+            Screen::Submitting => {
+                if let Some(task) = &self.submitting_task {
+                    task.cancel_flag.store(true, Ordering::Relaxed);
+                }
+                self.submitting_task = None;
+                self.screen = Screen::Practice;
+                self.status_line = String::from("已取消本次评分，返回作答界面。");
             }
             Screen::Practice => {
                 self.open_type_screen()?;
@@ -1575,13 +1873,20 @@ impl YueJieRustApp {
 
     fn handle_result_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char('1') | KeyCode::Enter => {
-                self.perform_action(Action::ResultViewAnalysis)?
-            }
+            KeyCode::Left => self.result_action_index = self.result_action_index.saturating_sub(1),
+            KeyCode::Right => self.result_action_index = (self.result_action_index + 1).min(4),
+            KeyCode::Char('1') => self.perform_action(Action::ResultViewAnalysis)?,
             KeyCode::Char('2') => self.perform_action(Action::ResultContinue)?,
             KeyCode::Char('3') => self.perform_action(Action::ResultRedo)?,
             KeyCode::Char('4') => self.perform_action(Action::ResultBackTypes)?,
             KeyCode::Char('5') => self.perform_action(Action::ResultBackHome)?,
+            KeyCode::Enter => match self.result_action_index {
+                0 => self.perform_action(Action::ResultViewAnalysis)?,
+                1 => self.perform_action(Action::ResultContinue)?,
+                2 => self.perform_action(Action::ResultRedo)?,
+                3 => self.perform_action(Action::ResultBackTypes)?,
+                _ => self.perform_action(Action::ResultBackHome)?,
+            },
             KeyCode::PageUp => {
                 self.result_detail_scroll = self.result_detail_scroll.saturating_sub(3);
             }
@@ -1618,7 +1923,16 @@ impl YueJieRustApp {
 
     fn handle_review_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char('r') | KeyCode::Enter => self.perform_action(Action::ReviewRedo)?,
+            KeyCode::Left => self.review_action_index = 0,
+            KeyCode::Right => self.review_action_index = 1,
+            KeyCode::Char('r') => self.perform_action(Action::ReviewRedo)?,
+            KeyCode::Enter => {
+                if self.review_action_index == 0 {
+                    self.perform_action(Action::ReviewRedo)?
+                } else {
+                    self.perform_action(Action::BackReview)?
+                }
+            }
             KeyCode::PageUp => {
                 self.review_detail_scroll = self.review_detail_scroll.saturating_sub(3);
             }
@@ -1786,6 +2100,7 @@ impl YueJieRustApp {
                         answers: review.answers,
                     });
                     self.review_back_screen = Screen::History;
+                    self.review_action_index = 0;
                     self.status_line = String::from(
                         "PageUp/PageDown 或滚轮查看复盘详情，Enter/R 可重新作答，Esc 返回历史。",
                     );
@@ -1871,6 +2186,7 @@ impl YueJieRustApp {
             Action::ResultContinue => self.start_generation()?,
             Action::ResultViewAnalysis => {
                 self.review_back_screen = Screen::Result;
+                self.review_action_index = 0;
                 self.status_line = String::from(
                     "PageUp/PageDown 或滚轮查看完整解析，R 可重做，Esc 返回结果总览。",
                 );
@@ -2042,6 +2358,71 @@ impl YueJieRustApp {
         }
     }
 
+    fn push_submission_log(&mut self, message: String) {
+        if is_generation_heartbeat(&message) {
+            if let Some(last) = self.submission_log.last_mut() {
+                if is_generation_heartbeat(last) {
+                    *last = message;
+                    return;
+                }
+            }
+        }
+        self.submission_log.push(message);
+        if self.submission_log.len() > 8 {
+            let overflow = self.submission_log.len() - 8;
+            self.submission_log.drain(0..overflow);
+        }
+    }
+
+    fn start_submission(&mut self) -> Result<()> {
+        let Some(practice) = self.practice.clone() else {
+            return Ok(());
+        };
+        let backend = BackendBridge::new()?;
+        self.submission_sequence = self.submission_sequence.wrapping_add(1);
+        let job_id = self.submission_sequence;
+        let (tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let response_word_count = practice.response_text().split_whitespace().count();
+        self.submission_phase = String::from("boot");
+        self.submission_message = format!(
+            "已提交 {} {}，检测到约 {} 词内容，正在启动 AI 评分与批注流程。",
+            format_level_label(&practice.question_set.level),
+            format_question_label(
+                &practice.question_set.question_type,
+                practice.question_set.slot
+            ),
+            response_word_count,
+        );
+        self.submission_log = vec![self.submission_message.clone()];
+        self.submitting_task = Some(SubmittingTask {
+            job_id,
+            started_at: Instant::now(),
+            receiver: rx,
+            cancel_flag: cancel_flag.clone(),
+        });
+        self.generating_tick = 0;
+        self.screen = Screen::Submitting;
+
+        std::thread::spawn(move || {
+            if let Err(err) = backend.stream_submit(
+                &practice.question_set.id,
+                &practice.started_at_iso,
+                &practice.answers,
+                practice.is_history_retry,
+                job_id,
+                tx.clone(),
+                cancel_flag,
+            ) {
+                let _ = tx.send(SubmissionMessage::Finished {
+                    job_id,
+                    result: Err(err.to_string()),
+                });
+            }
+        });
+        Ok(())
+    }
+
     fn submit_practice(&mut self) -> Result<()> {
         if let Some(practice) = &mut self.practice {
             if practice.question_set.questions.is_empty()
@@ -2060,6 +2441,9 @@ impl YueJieRustApp {
                 return Ok(());
             }
             practice.submit_confirm_pending = false;
+            if practice.question_set.questions.is_empty() {
+                return self.start_submission();
+            }
             let response = self.backend.submit(
                 &practice.question_set.id,
                 &practice.started_at_iso,
@@ -2177,6 +2561,7 @@ impl YueJieRustApp {
             Screen::LevelSelect => self.draw_level_select(frame, area, palette),
             Screen::TypeSelect => self.draw_type_select(frame, area, palette),
             Screen::Generating => self.draw_generating(frame, area, palette),
+            Screen::Submitting => self.draw_submitting(frame, area, palette),
             Screen::Practice => self.draw_practice(frame, area, palette),
             Screen::Result => self.draw_result(frame, area, palette),
             Screen::History => self.draw_history(frame, area, palette),
@@ -2622,7 +3007,14 @@ impl YueJieRustApp {
         ];
         let header = Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
-                "AI 正在生成真题级阅读题",
+                if matches!(
+                    self.selected_type,
+                    TypeChoice::Writing | TypeChoice::Translation
+                ) {
+                    "AI 正在生成真题级主观题"
+                } else {
+                    "AI 正在生成真题级阅读题"
+                },
                 title_style(palette),
             )),
             Line::from(Span::styled(
@@ -2741,6 +3133,152 @@ impl YueJieRustApp {
         }
         if self.generation_log.is_empty() {
             log_lines.push(Line::from("正在等待第一条进度消息。"));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(log_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("", palette)),
+            right[1],
+        );
+        self.draw_status_line(frame, chunks[3], palette);
+    }
+
+    fn draw_submitting(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
+        let outer = centered_rect(86, 72, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Length(4),
+                Constraint::Min(12),
+                Constraint::Length(1),
+            ])
+            .split(outer);
+        let elapsed = self
+            .submitting_task
+            .as_ref()
+            .map(|task| task.started_at.elapsed().as_secs())
+            .unwrap_or(0);
+        let active_index = submission_step_index(&self.submission_phase);
+        let steps = [
+            ("准备评分", "读取答案、题型和评分维度"),
+            ("请求评分", "向 DeepSeek 发送主观题评阅请求"),
+            ("整理批注", "抽取错词、语病与逐句反馈"),
+            ("保存结果", "写入记录、词汇与薄弱项"),
+        ];
+
+        let header = Paragraph::new(Text::from(vec![
+            Line::from(Span::styled("AI 正在评分与批注", title_style(palette))),
+            Line::from(Span::styled(
+                format!("已等待 {}", seconds_to_text(elapsed as i64)),
+                Style::default().fg(palette.muted),
+            )),
+        ]))
+        .alignment(Alignment::Center)
+        .block(simple_block("", palette));
+        frame.render_widget(header, chunks[0]);
+
+        let scan = generation_scan_frame(self.generating_tick);
+        let phase_marker = generation_phase_marker(self.generating_tick);
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("评分脉冲", title_style(palette))),
+                Line::from(format!(
+                    "{}  {}  {}",
+                    phase_marker,
+                    format_submission_phase(&self.submission_phase),
+                    scan
+                )),
+            ]))
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
+            chunks[1],
+        );
+
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
+            .split(chunks[2]);
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(6), Constraint::Min(6)])
+            .split(body[0]);
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(7), Constraint::Min(7)])
+            .split(body[1]);
+
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("当前状态", title_style(palette))),
+                Line::from(self.submission_message.clone()),
+                Line::from(""),
+                Line::from("评分将生成：总评、错词、病句改写、逐句批注与高分版本。"),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("", palette)),
+            left[0],
+        );
+
+        let active_marker = generation_phase_marker(self.generating_tick);
+        let mut step_lines = vec![
+            Line::from(Span::styled("阶段看板", title_style(palette))),
+            Line::from(""),
+        ];
+        for (index, (title, detail)) in steps.iter().enumerate() {
+            let marker = if index < active_index {
+                "●"
+            } else if index == active_index {
+                active_marker
+            } else {
+                "○"
+            };
+            step_lines.push(Line::from(format!("{} {}  {}", marker, title, detail)));
+        }
+        step_lines.push(Line::from(""));
+        step_lines.push(Line::from("Esc 可取消返回；已取消时不会写入半成品。"));
+        frame.render_widget(
+            Paragraph::new(Text::from(step_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("流程", palette)),
+            left[1],
+        );
+
+        let orbit = generation_orbit_frame(self.generating_tick);
+        let wave = generation_wave_frame(self.generating_tick);
+        let wait_hint = if elapsed >= 90 {
+            "等待较久时，多数情况是远端模型仍在生成评分与逐句批注。"
+        } else if elapsed >= 45 {
+            "主观题评分通常比客观题更慢，因为还要整理错词、语病和高分版本。"
+        } else {
+            "Rust 前端保持响应，AI 评分与批注仍在后台继续执行。"
+        };
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("批注引擎", title_style(palette))),
+                Line::from(format!(
+                    "{}  {}",
+                    orbit,
+                    format_submission_phase(&self.submission_phase)
+                )),
+                Line::from(format!("{}  正在生成总评、逐句批注与改写参考", wave)),
+                Line::from(wait_hint),
+                Line::from("实时心跳会持续刷新状态。"),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("", palette)),
+            right[0],
+        );
+
+        let mut log_lines = vec![
+            Line::from(Span::styled("最近日志", title_style(palette))),
+            Line::from(""),
+        ];
+        for item in &self.submission_log {
+            log_lines.push(Line::from(format!("- {}", item)));
+        }
+        if self.submission_log.is_empty() {
+            log_lines.push(Line::from("正在等待第一条评分进度消息。"));
         }
         frame.render_widget(
             Paragraph::new(Text::from(log_lines))
@@ -3080,7 +3618,7 @@ impl YueJieRustApp {
             buttons[0],
             palette,
             "查看解析",
-            true,
+            self.result_action_index == 0,
             Action::ResultViewAnalysis,
         );
         self.draw_action_button(
@@ -3088,7 +3626,7 @@ impl YueJieRustApp {
             buttons[1],
             palette,
             "下一题",
-            false,
+            self.result_action_index == 1,
             Action::ResultContinue,
         );
         self.draw_action_button(
@@ -3096,7 +3634,7 @@ impl YueJieRustApp {
             buttons[2],
             palette,
             "重做本题",
-            false,
+            self.result_action_index == 2,
             Action::ResultRedo,
         );
         self.draw_action_button(
@@ -3104,7 +3642,7 @@ impl YueJieRustApp {
             buttons[3],
             palette,
             "题型选择",
-            false,
+            self.result_action_index == 3,
             Action::ResultBackTypes,
         );
         self.draw_action_button(
@@ -3112,7 +3650,7 @@ impl YueJieRustApp {
             buttons[4],
             palette,
             "回到首页",
-            false,
+            self.result_action_index == 4,
             Action::ResultBackHome,
         );
         self.draw_status_line(frame, chunks[5], palette);
@@ -3601,6 +4139,36 @@ impl YueJieRustApp {
                 }
             }
             lines.push(Line::from(""));
+            lines.push(Line::from("逐句批注："));
+            lines.push(Line::from(""));
+            if evaluation.sentence_annotations.is_empty() {
+                lines.push(Line::from("暂无逐句批注。"));
+            } else {
+                for (index, item) in evaluation.sentence_annotations.iter().enumerate() {
+                    lines.push(Line::from(format!(
+                        "句子 {}：{}",
+                        index + 1,
+                        item.original_sentence
+                    )));
+                    if !item.strengths_zh.trim().is_empty() {
+                        lines.push(Line::from(format!("亮点：{}", item.strengths_zh)));
+                    }
+                    if !item.issues_zh.trim().is_empty() {
+                        lines.push(Line::from(format!("问题：{}", item.issues_zh)));
+                    }
+                    if !item.revised_sentence.trim().is_empty() {
+                        lines.push(Line::from(format!("参考改写：{}", item.revised_sentence)));
+                    }
+                    if !item.skill_tag.trim().is_empty() && item.skill_tag != "general" {
+                        lines.push(Line::from(format!(
+                            "关注点：{}",
+                            format_skill_label(&item.skill_tag)
+                        )));
+                    }
+                    lines.push(Line::from(""));
+                }
+            }
+            lines.push(Line::from(""));
             if evaluation.sentence_rewrites.is_empty() {
                 lines.push(Line::from("暂无病句改写。"));
             } else {
@@ -3656,7 +4224,7 @@ impl YueJieRustApp {
             buttons[0],
             palette,
             "重新作答",
-            true,
+            self.review_action_index == 0,
             Action::ReviewRedo,
         );
         self.draw_action_button(
@@ -3668,7 +4236,7 @@ impl YueJieRustApp {
             } else {
                 "返回结果"
             },
-            false,
+            self.review_action_index == 1,
             Action::BackReview,
         );
         self.draw_status_line(frame, chunks[4], palette);
@@ -5484,6 +6052,17 @@ fn generation_step_index(phase: &str) -> usize {
     }
 }
 
+fn submission_step_index(phase: &str) -> usize {
+    match phase {
+        "boot" | "prepare" => 0,
+        "score_request" => 1,
+        "analysis" => 2,
+        "save" | "done" => 3,
+        "grade" => 2,
+        _ => 0,
+    }
+}
+
 fn format_generation_phase(phase: &str) -> &'static str {
     match phase {
         "boot" => "启动环境",
@@ -5496,6 +6075,19 @@ fn format_generation_phase(phase: &str) -> &'static str {
         "validated" => "校验通过",
         "save" => "保存结果",
         "done" => "生成完成",
+        _ => "处理中",
+    }
+}
+
+fn format_submission_phase(phase: &str) -> &'static str {
+    match phase {
+        "boot" => "启动评分",
+        "prepare" => "整理答案",
+        "score_request" => "AI 评分",
+        "analysis" => "整理批注",
+        "save" => "保存结果",
+        "done" => "评分完成",
+        "grade" => "整理判分",
         _ => "处理中",
     }
 }
@@ -5732,6 +6324,19 @@ fn mini_ratio_bar(ratio: f64, width: usize) -> String {
     let filled = (clamped * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn submit_timeout_for_answers(answers: &HashMap<String, String>) -> Duration {
+    if answers
+        .get("response_text")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        // Subjective scoring calls the real AI evaluator and may take much longer
+        // than objective grading, especially when the upstream model is busy.
+        Duration::from_secs(420)
+    } else {
+        Duration::from_secs(15)
+    }
 }
 
 fn generation_phase_marker(tick: usize) -> &'static str {
@@ -6050,6 +6655,29 @@ mod tests {
         let glyphs = timer_glyphs();
         assert_eq!(glyphs.get(&'4').unwrap()[0], "╻ ╻");
         assert_eq!(glyphs.get(&'4').unwrap()[2], "┗━┫");
+    }
+
+    #[test]
+    fn submit_timeout_is_extended_for_subjective_answers() {
+        let mut answers = HashMap::new();
+        answers.insert(
+            "response_text".to_string(),
+            "This is a subjective response.".to_string(),
+        );
+        assert_eq!(
+            submit_timeout_for_answers(&answers),
+            Duration::from_secs(420)
+        );
+    }
+
+    #[test]
+    fn submit_timeout_stays_short_for_objective_answers() {
+        let mut answers = HashMap::new();
+        answers.insert("q1".to_string(), "A".to_string());
+        assert_eq!(
+            submit_timeout_for_answers(&answers),
+            Duration::from_secs(15)
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ from app.domain.schemas import (
     QuestionSet,
     ScoreDimension,
     SentenceRewrite,
+    SentenceAnnotation,
     SubjectiveEvaluation,
     VocabularyItem,
     WordCorrection,
@@ -1666,6 +1667,7 @@ class SubjectiveEvaluationPipeline:
             "- provide 4 score dimensions tied to the rubric.\n"
             "- identify misspelled, misused, or weak words and give corrected English words plus short Chinese reason and Chinese meaning.\n"
             "- identify ungrammatical or awkward sentences and rewrite them in high-quality English.\n"
+            "- split the response into sentence-level annotations; for each sentence, comment briefly on strengths and weaknesses in Chinese and provide a better English revision when needed.\n"
             "- rewrite the full response into a high-scoring version while preserving the topic.\n"
             "- weakness_tags should highlight grammar, lexical_accuracy, coherence, content_relevance, translation_accuracy, or translation_fluency as appropriate.\n"
             "- keep all feedback in Chinese except corrected English words, rewritten English sentences, and the high-score version.\n"
@@ -1732,6 +1734,39 @@ class SubjectiveEvaluationPipeline:
                         "additionalProperties": False,
                     },
                 },
+                "sentence_annotations": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "original_sentence": {"type": "string"},
+                            "strengths_zh": {"type": "string"},
+                            "issues_zh": {"type": "string"},
+                            "revised_sentence": {"type": "string"},
+                            "skill_tag": {
+                                "type": "string",
+                                "enum": [
+                                    "grammar",
+                                    "lexical_accuracy",
+                                    "coherence",
+                                    "content_relevance",
+                                    "translation_accuracy",
+                                    "translation_fluency",
+                                    "general",
+                                ],
+                            },
+                        },
+                        "required": [
+                            "original_sentence",
+                            "strengths_zh",
+                            "issues_zh",
+                            "revised_sentence",
+                            "skill_tag",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
                 "high_score_version": {"type": "string"},
                 "weakness_tags": {
                     "type": "array",
@@ -1756,6 +1791,7 @@ class SubjectiveEvaluationPipeline:
                 "score_dimensions",
                 "wrong_words",
                 "sentence_rewrites",
+                "sentence_annotations",
                 "high_score_version",
                 "weakness_tags",
             ],
@@ -1781,6 +1817,10 @@ class SubjectiveEvaluationPipeline:
             SentenceRewrite.from_dict(item)
             for item in payload.get("sentence_rewrites", [])
         ]
+        sentence_annotations = [
+            SentenceAnnotation.from_dict(item)
+            for item in payload.get("sentence_annotations", [])
+        ]
         weakness_tags = [str(item).strip() for item in payload.get("weakness_tags", []) if str(item).strip()]
         high_score_version = str(payload.get("high_score_version", "")).strip()
         overall_feedback = str(payload.get("overall_feedback_zh", "")).strip()
@@ -1794,6 +1834,7 @@ class SubjectiveEvaluationPipeline:
             score_dimensions=dimensions,
             wrong_words=wrong_words[:8],
             sentence_rewrites=sentence_rewrites[:6],
+            sentence_annotations=sentence_annotations[:12],
             high_score_version=high_score_version,
             weakness_tags=weakness_tags[:6],
         )

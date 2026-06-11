@@ -49,6 +49,25 @@ def _heartbeat_message(phase: str, elapsed_total: int, elapsed_phase: int) -> st
     return f"AI 生成流程仍在继续，累计已等待 {elapsed_total} 秒。"
 
 
+def _submit_heartbeat_message(phase: str, elapsed_total: int, elapsed_phase: int) -> str:
+    if phase == "boot":
+        return f"正在加载评分运行时与本地题库，已等待 {elapsed_total} 秒。"
+    if phase == "prepare":
+        return f"正在整理答案、评分维度与题目元数据，已等待 {elapsed_total} 秒。"
+    if phase == "score_request":
+        return (
+            f"DeepSeek 正在评分并生成批注，当前阶段已等待 {elapsed_phase} 秒，"
+            f"累计 {elapsed_total} 秒。"
+        )
+    if phase == "analysis":
+        return f"正在整理错词、病句改写与高分版本，累计已等待 {elapsed_total} 秒。"
+    if phase == "save":
+        return f"正在保存本次记录、词汇与薄弱项，累计已等待 {elapsed_total} 秒。"
+    if phase == "grade":
+        return f"正在整理客观题判分结果，累计已等待 {elapsed_total} 秒。"
+    return f"AI 评分流程仍在继续，累计已等待 {elapsed_total} 秒。"
+
+
 def _parse_level(raw: str) -> Level:
     try:
         return Level(raw)
@@ -226,6 +245,119 @@ def command_submit(_args: argparse.Namespace) -> None:
     _success(result=result.to_dict())
 
 
+def command_submit_live(_args: argparse.Namespace) -> None:
+    payload = _read_json_stdin()
+    _emit_event("progress", phase="boot", message="正在加载评分运行时与本地题库。")
+    runtime = build_runtime()
+
+    question_set_id = payload.get("question_set_id")
+    if not question_set_id:
+        _emit_event("error", error="missing question_set_id")
+        raise SystemExit(1)
+    question_set = runtime.db.get_question_set(question_set_id)
+    if question_set is None:
+        _emit_event("error", error=f"question set not found: {question_set_id}")
+        raise SystemExit(1)
+
+    started_at_raw = payload.get("started_at")
+    if not started_at_raw:
+        _emit_event("error", error="missing started_at")
+        raise SystemExit(1)
+    try:
+        started_at = datetime.fromisoformat(started_at_raw)
+    except ValueError as exc:
+        _emit_event("error", error=f"invalid started_at: {exc}")
+        raise SystemExit(1) from exc
+
+    answers = payload.get("answers", {})
+    if not isinstance(answers, dict):
+        _emit_event("error", error="answers must be a JSON object")
+        raise SystemExit(1)
+
+    progress_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+    def on_progress(phase: str, message: str) -> None:
+        progress_queue.put((phase, message))
+
+    def worker() -> None:
+        try:
+            result = runtime.attempt_service.submit_attempt(
+                question_set=question_set,
+                answers={str(key): str(value) for key, value in answers.items()},
+                started_at=started_at,
+                is_history_retry=bool(payload.get("is_history_retry", False)),
+                progress_callback=on_progress,
+            )
+        except Exception as exc:
+            result_queue.put(("error", exc))
+            return
+        result_queue.put(("result", result))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    current_phase = "boot"
+    phase_started_at = time.monotonic()
+    total_started_at = phase_started_at
+    next_heartbeat_at = total_started_at + 6
+
+    while True:
+        drained_progress = False
+        while True:
+            try:
+                phase, message = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained_progress = True
+            current_phase = phase
+            phase_started_at = time.monotonic()
+            next_heartbeat_at = phase_started_at + 6
+            _emit_event("progress", phase=phase, message=message)
+
+        try:
+            status, result_payload = result_queue.get(timeout=0.8)
+        except queue.Empty:
+            if not drained_progress:
+                now = time.monotonic()
+                if now >= next_heartbeat_at:
+                    _emit_event(
+                        "progress",
+                        phase=current_phase,
+                        message=_submit_heartbeat_message(
+                            current_phase,
+                            int(now - total_started_at),
+                            int(now - phase_started_at),
+                        ),
+                    )
+                    next_heartbeat_at = now + 6
+            if thread.is_alive():
+                continue
+            thread.join(timeout=0.1)
+            if result_queue.empty():
+                _emit_event("error", error="评分线程已退出，但未返回结果。")
+                raise SystemExit(1)
+            continue
+
+        while True:
+            try:
+                phase, message = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            current_phase = phase
+            phase_started_at = time.monotonic()
+            _emit_event("progress", phase=phase, message=message)
+
+        if status == "error":
+            _emit_event("error", error=str(result_payload))
+            raise SystemExit(1) from result_payload
+
+        result = result_payload
+        break
+
+    _emit_event("result", ok=True, result=result.to_dict())
+
+
 def command_history(args: argparse.Namespace) -> None:
     runtime = build_runtime()
     _success(history=runtime.stats_service.list_history(limit=args.limit))
@@ -314,6 +446,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     submit = subparsers.add_parser("submit")
     submit.set_defaults(func=command_submit)
+
+    submit_live = subparsers.add_parser("submit-live")
+    submit_live.set_defaults(func=command_submit_live)
 
     history = subparsers.add_parser("history")
     history.add_argument("--limit", type=int, default=30)

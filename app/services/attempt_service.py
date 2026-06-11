@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Callable
 
 from app.constants import SKILL_ADVICE, SKILL_LABELS
 from app.data.db import Database
@@ -34,6 +35,7 @@ class AttemptService:
         answers: dict[str, str],
         started_at: datetime,
         is_history_retry: bool = False,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> AttemptResult:
         submitted_at = datetime.now(timezone.utc)
         duration_seconds = max(1, int((submitted_at - started_at).total_seconds()))
@@ -43,11 +45,19 @@ class AttemptService:
                 raise ValueError("missing response_text for subjective task")
             if self.subjective_evaluator is None:
                 raise RuntimeError("subjective evaluator is not configured")
+            if progress_callback is not None:
+                progress_callback(
+                    "prepare",
+                    f"已读取作答内容，约 {len(response_text.split())} 词；正在整理评分维度。",
+                )
+                progress_callback("score_request", "正在向 DeepSeek 请求评分与批注。")
             evaluation = self.subjective_evaluator.evaluate(
                 question_set=question_set,
                 response_text=response_text,
                 duration_seconds=duration_seconds,
             )
+            if progress_callback is not None:
+                progress_callback("analysis", "评分结果已返回，正在整理错词、病句和高分版本。")
             result = AttemptResult(
                 id=make_id("attempt"),
                 question_set_id=question_set.id,
@@ -86,8 +96,12 @@ class AttemptService:
                 if item.corrected.strip()
             ]
         else:
+            if progress_callback is not None:
+                progress_callback("grade", "正在判分并整理客观题结果。")
             result = grade_attempt(question_set, answers, duration_seconds)
             extra_vocab = []
+        if progress_callback is not None:
+            progress_callback("save", "正在保存作答记录、词汇与薄弱项。")
         self.db.save_attempt(result, answers, started_at, submitted_at, is_history_retry)
         self.db.upsert_vocabulary_items(question_set.vocabulary)
         if extra_vocab:
