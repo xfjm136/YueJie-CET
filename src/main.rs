@@ -4942,7 +4942,18 @@ impl YueJieRustApp {
             Line::from(practice.question_set.task_prompt.clone()),
             Line::from(""),
         ];
-        for line in &practice.question_set.passage.paragraphs {
+        for (index, line) in practice.question_set.passage.paragraphs.iter().enumerate() {
+            if index == 0 {
+                let title_normalized = practice.question_set.title.trim().to_lowercase();
+                let line_normalized = line.trim().to_lowercase();
+                if !title_normalized.is_empty()
+                    && (line_normalized == title_normalized
+                        || line_normalized.contains(&title_normalized)
+                        || title_normalized.contains(&line_normalized))
+                {
+                    continue;
+                }
+            }
             prompt_lines.push(Line::from(line.clone()));
         }
         prompt_lines.push(Line::from(""));
