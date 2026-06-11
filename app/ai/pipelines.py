@@ -252,14 +252,16 @@ class QuestionGenerationPipeline:
             min_words = 120 if level is Level.CET4 else 150
             max_words = 180 if level is Level.CET4 else 200
             style_hint = (
-                "Favor a practical campus or social topic, often in a scenario-based CET4 style."
+                "Favor a practical campus or social topic, usually in an outline-led, situational, or short instruction-based CET4 style."
                 if level is Level.CET4
-                else "Favor a sentence-led or opinion-led argumentative CET6 style with a slightly more abstract issue."
+                else "Favor a sentence-led, opinion-led, or phenomenon-comment argumentative CET6 style with a slightly more abstract issue."
             )
             return (
                 f"CET writing task. Write an English essay of at least {min_words} words but no more than {max_words} words. "
                 f"{style_hint} "
                 "Provide an exam-style task prompt in English, 2-3 short instruction lines, a high-scoring sample essay, and rubric focus tags. "
+                "For CET4, prefer prompts that look like short outline tasks or practical campus/social instructions. "
+                "For CET6, prefer prompts that look like a quoted statement, a concise social phenomenon, or a viewpoint to comment on. "
                 "No objective questions, options, or answer_key should be included."
             )
         if question_type is QuestionType.TRANSLATION:
@@ -361,6 +363,8 @@ class QuestionGenerationPipeline:
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
             "- For writing, produce a CET-style prompt format such as an outline-led topic, a short situational instruction, or a sentence-led argumentative task as appropriate to the level.\n"
+            "- For CET4 writing, the prompt should look closer to practical campus/social essay instructions than to abstract philosophical debate.\n"
+            "- For CET6 writing, the prompt should look closer to a short statement/comment/opinion task than to a basic school composition title.\n"
             "- For translation, provide a Chinese source passage on Chinese culture, history, society, development, education, ecology, or technology as appropriate to the level.\n"
             "- Do not write in a dramatic, fictional, or conversational blog style.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
@@ -1189,7 +1193,7 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.WRITING:
             return [
                 "one short exam instruction block",
-                "2-3 prompt lines in English",
+                "2-3 prompt lines in English with clear CET writing-task shape",
                 "one high-scoring sample essay and rubric focus tags",
             ]
         if question_type is QuestionType.TRANSLATION:
@@ -1240,6 +1244,7 @@ class QuestionGenerationPipeline:
             return [
                 "the sample essay should be coherent, natural, and score in the upper CET band",
                 "the prompt should favor practical social, campus, or technology themes",
+                "the prompt format itself should resemble CET writing instructions rather than a generic composition title",
             ]
         if question_type is QuestionType.TRANSLATION:
             return [

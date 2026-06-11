@@ -626,8 +626,12 @@ class CETQuestionValidator:
         if not 2 <= len(prompt_lines) <= 3:
             errors.append("写作题题面应更接近 CET 常见 2-3 行提示结构")
         joined = " ".join(prompt_lines).lower()
-        if level is Level.CET6 and not any(marker in joined for marker in ("for this part", "directions", "comment", "statement", "topic")):
-            errors.append("CET6 写作题面应更贴近句子引导或观点引导型命题格式")
+        if level is Level.CET4:
+            if not any(marker in task_prompt for marker in ("for this part", "you are allowed", "write a short essay")):
+                errors.append("CET4 写作 task_prompt 应更贴近标准考试指令格式")
+        else:
+            if not any(marker in joined for marker in ("statement", "comment", "say", "view", "opinion", "phenomenon", "topic")):
+                errors.append("CET6 写作题面应更贴近句子引导、观点评论或现象评论型命题格式")
 
     def _validate_translation_source_style(
         self,

@@ -291,6 +291,18 @@ python -u -m app.bridge generate-live --level cet4 --question-type translation
 python -u -m app.bridge generate-live --level cet4 --question-type careful_reading --slot 1
 ```
 
+#### 批量抽样生成
+
+```bash
+python -m app.sample_review --level cet4 --question-type all --count 2
+```
+
+会在 `data/sample-review/` 下输出：
+
+- 每套题的完整 JSON
+- 按题型拆分的摘要 JSON
+- 一份总览索引，便于逐类人工 review
+
 #### 提交评分
 
 ```bash
