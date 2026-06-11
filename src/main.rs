@@ -504,6 +504,8 @@ enum Action {
     HomeMenu(usize),
     Level(LevelChoice),
     Type(TypeChoice),
+    RetryGeneration,
+    RetrySubmission,
     BackHome,
     BackType,
     BackHistory,
@@ -1368,11 +1370,13 @@ struct YueJieRustApp {
     generation_phase: String,
     generation_message: String,
     generation_log: Vec<String>,
+    generation_error_message: Option<String>,
     submitting_task: Option<SubmittingTask>,
     submission_sequence: u64,
     submission_phase: String,
     submission_message: String,
     submission_log: Vec<String>,
+    submission_error_message: Option<String>,
     practice: Option<PracticeState>,
     result: Option<AttemptResult>,
     result_detail_scroll: u16,
@@ -1419,11 +1423,13 @@ impl YueJieRustApp {
             generation_phase: String::from("idle"),
             generation_message: String::from("尚未开始生成。"),
             generation_log: Vec::new(),
+            generation_error_message: None,
             submitting_task: None,
             submission_sequence: 0,
             submission_phase: String::from("idle"),
             submission_message: String::from("尚未开始评分。"),
             submission_log: Vec::new(),
+            submission_error_message: None,
             practice: None,
             result: None,
             result_detail_scroll: 0,
@@ -1498,21 +1504,33 @@ impl YueJieRustApp {
                             self.generating_task = None;
                             match result {
                                 Ok(question_set) => {
+                                    self.generation_error_message = None;
                                     self.sync_selection_from_question_set(&question_set);
                                     self.status_line = match question_set.source_type.as_str() {
                                         "ai" => String::from("题目已生成，开始作答。"),
                                         "ai_repaired" => {
                                             String::from("题目已生成，并已自动修复结构后进入作答。")
                                         }
-                                        other => format!("题目来源：{}，现在开始作答。", other),
+                                        other => format!(
+                                            "题目来源：{}，现在开始作答。",
+                                            display_source_type(other)
+                                        ),
                                     };
                                     self.practice = Some(PracticeState::new(question_set, false));
                                     self.result_action_index = 0;
                                     self.screen = Screen::Practice;
                                 }
                                 Err(message) => {
-                                    self.screen = Screen::TypeSelect;
-                                    self.status_line = message;
+                                    self.generation_error_message = Some(message.clone());
+                                    self.generation_phase = String::from("failed");
+                                    self.generation_message = String::from(
+                                        "本轮出题未成功，请直接重试或返回题型选择。",
+                                    );
+                                    self.push_generation_log(format!("失败：{}", message));
+                                    self.status_line = String::from(
+                                        "R/Enter 重试，Esc 返回题型选择，鼠标也可点击操作。",
+                                    );
+                                    self.screen = Screen::Generating;
                                 }
                             }
                         }
@@ -1547,6 +1565,7 @@ impl YueJieRustApp {
                             self.submitting_task = None;
                             match result {
                                 Ok(result) => {
+                                    self.submission_error_message = None;
                                     if let Some(practice) = &self.practice {
                                         self.review = Some(ReviewBundle {
                                             question_set: practice.question_set.clone(),
@@ -1565,8 +1584,16 @@ impl YueJieRustApp {
                                     self.screen = Screen::Result;
                                 }
                                 Err(message) => {
-                                    self.screen = Screen::Practice;
-                                    self.status_line = message;
+                                    self.submission_error_message = Some(message.clone());
+                                    self.submission_phase = String::from("failed");
+                                    self.submission_message = String::from(
+                                        "本轮评分未成功，请直接重试或返回作答界面。",
+                                    );
+                                    self.push_submission_log(format!("失败：{}", message));
+                                    self.status_line = String::from(
+                                        "R/Enter 重试评分，Esc 返回作答界面，不会清空你的答案。",
+                                    );
+                                    self.screen = Screen::Submitting;
                                 }
                             }
                         }
@@ -1616,8 +1643,8 @@ impl YueJieRustApp {
             Screen::Home => self.handle_home_key(key),
             Screen::LevelSelect => self.handle_level_key(key),
             Screen::TypeSelect => self.handle_type_key(key)?,
-            Screen::Generating => {}
-            Screen::Submitting => {}
+            Screen::Generating => self.handle_generating_key(key)?,
+            Screen::Submitting => self.handle_submitting_key(key)?,
             Screen::Practice => self.handle_practice_key(key)?,
             Screen::Result => self.handle_result_key(key)?,
             Screen::History => self.handle_history_key(key)?,
@@ -1627,6 +1654,32 @@ impl YueJieRustApp {
             Screen::Settings => self.handle_settings_key(key)?,
         }
         Ok(false)
+    }
+
+    fn handle_generating_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.generation_error_message.is_none() {
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.perform_action(Action::RetryGeneration)?
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_submitting_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.submission_error_message.is_none() {
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.perform_action(Action::RetrySubmission)?
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn handle_escape(&mut self) -> Result<()> {
@@ -2091,6 +2144,12 @@ impl YueJieRustApp {
                     .unwrap_or(0);
                 self.start_generation()?;
             }
+            Action::RetryGeneration => {
+                self.start_generation()?;
+            }
+            Action::RetrySubmission => {
+                self.start_submission()?;
+            }
             Action::BackHome => self.return_home()?,
             Action::BackType => self.open_type_screen()?,
             Action::BackHistory => self.return_home()?,
@@ -2178,8 +2237,13 @@ impl YueJieRustApp {
             }
             Action::SubmitPractice => self.submit_practice()?,
             Action::PracticeBack => {
-                self.open_type_screen()?;
-                self.status_line = String::from("已返回题型选择。");
+                if self.practice.is_some() {
+                    self.screen = Screen::Practice;
+                    self.status_line = String::from("已返回作答界面。");
+                } else {
+                    self.open_type_screen()?;
+                    self.status_line = String::from("已返回题型选择。");
+                }
             }
             Action::PracticeSelectBlank(index) => {
                 if let Some(practice) = &mut self.practice {
@@ -2327,6 +2391,7 @@ impl YueJieRustApp {
         let backend = BackendBridge::new()?;
         let level = self.selected_level;
         let type_choice = self.selected_type;
+        self.generation_error_message = None;
         self.generation_sequence = self.generation_sequence.wrapping_add(1);
         let job_id = self.generation_sequence;
         let (tx, rx) = mpsc::channel();
@@ -2396,6 +2461,7 @@ impl YueJieRustApp {
             return Ok(());
         };
         let backend = BackendBridge::new()?;
+        self.submission_error_message = None;
         self.submission_sequence = self.submission_sequence.wrapping_add(1);
         let job_id = self.submission_sequence;
         let (tx, rx) = mpsc::channel();
@@ -3075,15 +3141,19 @@ impl YueJieRustApp {
             .constraints([Constraint::Length(7), Constraint::Min(7)])
             .split(body[1]);
 
+        let mut status_lines = vec![
+            Line::from(Span::styled("当前状态", title_style(palette))),
+            Line::from(self.generation_message.clone()),
+            Line::from(format!("题型特征：{}", self.selected_type.brief())),
+            Line::from(self.selected_type.recommended_time()),
+        ];
+        if self.generation_error_message.is_some() {
+            status_lines.push(Line::from("本页可直接重试，无需重新选择题型。"));
+        }
         frame.render_widget(
-            Paragraph::new(Text::from(vec![
-                Line::from(Span::styled("当前状态", title_style(palette))),
-                Line::from(self.generation_message.clone()),
-                Line::from(format!("题型特征：{}", self.selected_type.brief())),
-                Line::from(self.selected_type.recommended_time()),
-            ]))
-            .wrap(Wrap { trim: false })
-            .block(simple_block("", palette)),
+            Paragraph::new(Text::from(status_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("", palette)),
             left[0],
         );
 
@@ -3137,22 +3207,66 @@ impl YueJieRustApp {
             right[0],
         );
 
-        let mut log_lines = vec![
-            Line::from(Span::styled("最近日志", title_style(palette))),
-            Line::from(""),
-        ];
-        for item in &self.generation_log {
-            log_lines.push(Line::from(format!("- {}", item)));
+        let error_mode = self.generation_error_message.is_some();
+        let log_block = simple_block(if error_mode { "失败详情" } else { "最近日志" }, palette);
+        let log_inner = log_block.inner(right[1]);
+        frame.render_widget(log_block, right[1]);
+        if error_mode && log_inner.height >= 4 {
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(4), Constraint::Length(3)])
+                .split(log_inner);
+            let mut log_lines = vec![
+                Line::from(Span::styled("本轮未成功完成", title_style(palette))),
+                Line::from(""),
+            ];
+            if let Some(error) = &self.generation_error_message {
+                log_lines.push(Line::from(error.clone()));
+                log_lines.push(Line::from(""));
+            }
+            log_lines.push(Line::from("建议先按 R / Enter 原地重试；若多次失败，再按 Esc 返回。"));
+            frame.render_widget(
+                Paragraph::new(Text::from(log_lines))
+                    .wrap(Wrap { trim: false }),
+                sections[0],
+            );
+            let buttons = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(sections[1]);
+            self.draw_action_button(
+                frame,
+                buttons[0],
+                palette,
+                "重试生成",
+                true,
+                Action::RetryGeneration,
+            );
+            self.draw_action_button(
+                frame,
+                buttons[1],
+                palette,
+                "返回题型",
+                false,
+                Action::BackType,
+            );
+        } else {
+            let mut log_lines = vec![
+                Line::from(Span::styled("最近日志", title_style(palette))),
+                Line::from(""),
+            ];
+            for item in &self.generation_log {
+                log_lines.push(Line::from(format!("- {}", item)));
+            }
+            if self.generation_log.is_empty() {
+                log_lines.push(Line::from("正在等待第一条进度消息。"));
+            }
+            frame.render_widget(
+                Paragraph::new(Text::from(log_lines))
+                    .wrap(Wrap { trim: false }),
+                log_inner,
+            );
         }
-        if self.generation_log.is_empty() {
-            log_lines.push(Line::from("正在等待第一条进度消息。"));
-        }
-        frame.render_widget(
-            Paragraph::new(Text::from(log_lines))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("", palette)),
-            right[1],
-        );
         self.draw_status_line(frame, chunks[3], palette);
     }
 
@@ -3221,15 +3335,19 @@ impl YueJieRustApp {
             .constraints([Constraint::Length(7), Constraint::Min(7)])
             .split(body[1]);
 
+        let mut status_lines = vec![
+            Line::from(Span::styled("当前状态", title_style(palette))),
+            Line::from(self.submission_message.clone()),
+            Line::from(""),
+            Line::from("评分将生成：总评、错词、病句改写、逐句批注与高分版本。"),
+        ];
+        if self.submission_error_message.is_some() {
+            status_lines.push(Line::from("你的作答内容仍保留在内存中，可直接重试评分。"));
+        }
         frame.render_widget(
-            Paragraph::new(Text::from(vec![
-                Line::from(Span::styled("当前状态", title_style(palette))),
-                Line::from(self.submission_message.clone()),
-                Line::from(""),
-                Line::from("评分将生成：总评、错词、病句改写、逐句批注与高分版本。"),
-            ]))
-            .wrap(Wrap { trim: false })
-            .block(simple_block("", palette)),
+            Paragraph::new(Text::from(status_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("", palette)),
             left[0],
         );
 
@@ -3283,22 +3401,66 @@ impl YueJieRustApp {
             right[0],
         );
 
-        let mut log_lines = vec![
-            Line::from(Span::styled("最近日志", title_style(palette))),
-            Line::from(""),
-        ];
-        for item in &self.submission_log {
-            log_lines.push(Line::from(format!("- {}", item)));
+        let error_mode = self.submission_error_message.is_some();
+        let log_block = simple_block(if error_mode { "失败详情" } else { "最近日志" }, palette);
+        let log_inner = log_block.inner(right[1]);
+        frame.render_widget(log_block, right[1]);
+        if error_mode && log_inner.height >= 4 {
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(4), Constraint::Length(3)])
+                .split(log_inner);
+            let mut log_lines = vec![
+                Line::from(Span::styled("本轮评分未成功", title_style(palette))),
+                Line::from(""),
+            ];
+            if let Some(error) = &self.submission_error_message {
+                log_lines.push(Line::from(error.clone()));
+                log_lines.push(Line::from(""));
+            }
+            log_lines.push(Line::from("建议先按 R / Enter 重试；按 Esc 可返回继续修改答案。"));
+            frame.render_widget(
+                Paragraph::new(Text::from(log_lines))
+                    .wrap(Wrap { trim: false }),
+                sections[0],
+            );
+            let buttons = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(sections[1]);
+            self.draw_action_button(
+                frame,
+                buttons[0],
+                palette,
+                "重试评分",
+                true,
+                Action::RetrySubmission,
+            );
+            self.draw_action_button(
+                frame,
+                buttons[1],
+                palette,
+                "返回作答",
+                false,
+                Action::PracticeBack,
+            );
+        } else {
+            let mut log_lines = vec![
+                Line::from(Span::styled("最近日志", title_style(palette))),
+                Line::from(""),
+            ];
+            for item in &self.submission_log {
+                log_lines.push(Line::from(format!("- {}", item)));
+            }
+            if self.submission_log.is_empty() {
+                log_lines.push(Line::from("正在等待第一条评分进度消息。"));
+            }
+            frame.render_widget(
+                Paragraph::new(Text::from(log_lines))
+                    .wrap(Wrap { trim: false }),
+                log_inner,
+            );
         }
-        if self.submission_log.is_empty() {
-            log_lines.push(Line::from("正在等待第一条评分进度消息。"));
-        }
-        frame.render_widget(
-            Paragraph::new(Text::from(log_lines))
-                .wrap(Wrap { trim: false })
-                .block(simple_block("", palette)),
-            right[1],
-        );
         self.draw_status_line(frame, chunks[3], palette);
     }
 
@@ -3569,7 +3731,8 @@ impl YueJieRustApp {
                 Line::from(""),
                 Line::from(format!(
                     "来源：{} / 模型：{}",
-                    practice.question_set.source_type, practice.question_set.generator_model
+                    display_source_type(&practice.question_set.source_type),
+                    practice.question_set.generator_model
                 )),
                 Line::from(format!(
                     "主题：{} / 建议用时：{}",
@@ -4039,7 +4202,8 @@ impl YueJieRustApp {
                 Line::from(""),
                 Line::from(format!(
                     "来源：{} / 模型：{}",
-                    bundle.question_set.source_type, bundle.question_set.generator_model
+                    display_source_type(&bundle.question_set.source_type),
+                    bundle.question_set.generator_model
                 )),
             ]))
             .wrap(Wrap { trim: false })
@@ -4694,14 +4858,20 @@ impl YueJieRustApp {
                     )
                 )),
                 Line::from(format!(
-                    "词数：{} | 未答：{}",
+                    "词数：{} | 已答：{} / {}",
                     practice.question_set.word_count,
-                    practice.unanswered_count()
+                    practice.answered_count(),
+                    total_items
                 )),
                 Line::from(format!(
-                    "建议：{} | 来源：{}",
+                    "未答：{} | 建议：{}",
+                    practice.unanswered_count(),
                     recommended_time_text(&practice.question_set.question_type),
-                    practice.question_set.source_type
+                )),
+                Line::from(format!(
+                    "来源：{} | 模型：{}",
+                    display_source_type(&practice.question_set.source_type),
+                    truncate_text(&practice.question_set.generator_model, 10)
                 )),
                 Line::from(if practice.submit_confirm_pending {
                     "再次提交将按当前答案交卷。".to_string()
@@ -4992,7 +5162,11 @@ impl YueJieRustApp {
                     .get(&question.id)
                     .map_or(" ".to_string(), |value| blank_or_value(value));
                 let selected = practice.selected_blank == index;
-                let text = format!("{:02} [{}]", index + 1, answer);
+                let text = if answer.trim() == "__" {
+                    format!("{:02} [__]", index + 1)
+                } else {
+                    format!("{:02} [{}] 已填", index + 1, answer)
+                };
                 self.draw_action_button(
                     frame,
                     row_chunks[col],
@@ -5030,11 +5204,19 @@ impl YueJieRustApp {
                 .get(&practice.question_set.questions[practice.selected_blank].id)
                 .map(|value| value == &label)
                 .unwrap_or(false);
+            let assigned_to = assigned_blank_index(practice, &label);
+            let option_label = match assigned_to {
+                Some(blank_index) if selected => {
+                    format!("{}   -> 当前第 {:02} 空", option, blank_index + 1)
+                }
+                Some(blank_index) => format!("{}   -> 已填第 {:02} 空", option, blank_index + 1),
+                None => format!("{}   -> 未使用", option),
+            };
             self.draw_list_like_button(
                 frame,
                 target,
                 palette,
-                option,
+                &option_label,
                 selected,
                 Action::PracticeAssign(label),
             );
@@ -6149,6 +6331,7 @@ fn generation_step_index(phase: &str) -> usize {
         "blueprint" => 1,
         "generate_request" => 2,
         "validate" | "repair" | "validated" => 3,
+        "failed" => 3,
         "save" | "done" => 4,
         _ => 0,
     }
@@ -6161,6 +6344,7 @@ fn submission_step_index(phase: &str) -> usize {
         "analysis" => 2,
         "save" | "done" => 3,
         "grade" => 2,
+        "failed" => 2,
         _ => 0,
     }
 }
@@ -6175,6 +6359,7 @@ fn format_generation_phase(phase: &str) -> &'static str {
         "validate" => "规范校验",
         "repair" => "结构修复",
         "validated" => "校验通过",
+        "failed" => "生成失败",
         "save" => "保存结果",
         "done" => "生成完成",
         _ => "处理中",
@@ -6190,6 +6375,7 @@ fn format_submission_phase(phase: &str) -> &'static str {
         "save" => "保存结果",
         "done" => "评分完成",
         "grade" => "整理判分",
+        "failed" => "评分失败",
         _ => "处理中",
     }
 }
@@ -6346,6 +6532,31 @@ fn blank_or_value(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn display_source_type(value: &str) -> &'static str {
+    match value.trim() {
+        "" => "AI 生成",
+        "ai" => "AI 生成",
+        "ai_repaired" => "AI 修复生成",
+        "mock" => "本地样题",
+        _ => "AI 生成",
+    }
+}
+
+fn assigned_blank_index(practice: &PracticeState, label: &str) -> Option<usize> {
+    practice
+        .question_set
+        .questions
+        .iter()
+        .enumerate()
+        .find_map(|(index, question)| {
+            practice
+                .answers
+                .get(&question.id)
+                .filter(|value| value.as_str() == label)
+                .map(|_| index)
+        })
 }
 
 fn truncate_text(value: &str, max: usize) -> String {
@@ -6715,7 +6926,7 @@ fn timer_glyphs() -> HashMap<char, [&'static str; 5]> {
         ('4', ["╻ ╻", "┃ ┃", "┗━┫", "  ┃", "  ╹"]),
         ('5', ["┏━┓", "┃  ", "┗━┓", "  ┃", "┗━┛"]),
         ('6', ["┏━┓", "┃  ", "┣━┓", "┃ ┃", "┗━┛"]),
-        ('7', ["┏━┓", "  ┃", "  ┃", "  ┃", "  ┃"]),
+        ('7', ["┏━┓", "  ┃", " ╻┃", "  ┃", "  ╹"]),
         ('8', ["┏━┓", "┃ ┃", "┣━┫", "┃ ┃", "┗━┛"]),
         ('9', ["┏━┓", "┃ ┃", "┗━┫", "  ┃", "┗━┛"]),
         (':', ["   ", " • ", "   ", " • ", "   "]),

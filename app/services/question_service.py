@@ -24,11 +24,16 @@ class QuestionService:
         if progress_callback is not None:
             progress_callback("prepare", "正在读取题型统计、词汇库与薄弱项信息。")
         final_weakness_summary = weakness_summary or self.db.latest_weakness_summary(level, question_type)
+        recent_topics = self.db.recent_question_topics(level, question_type, slot=slot, limit=10)
+        generation_context = {
+            "weakness_summary": final_weakness_summary,
+            "recent_topics": recent_topics,
+        }
         question_set = self.pipeline.generate(
             level,
             question_type,
             slot,
-            final_weakness_summary,
+            generation_context,
             progress_callback=progress_callback,
         )
         if progress_callback is not None:

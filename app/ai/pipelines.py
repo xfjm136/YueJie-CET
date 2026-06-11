@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from secrets import choice as secrets_choice
 from typing import Any, Callable
 
@@ -27,6 +28,14 @@ from app.domain.schemas import (
 )
 
 
+@dataclass
+class SubjectiveEvaluationError(Exception):
+    errors: list[str]
+
+    def __str__(self) -> str:
+        return "；".join(self.errors)
+
+
 class QuestionGenerationPipeline:
     def __init__(
         self,
@@ -42,7 +51,7 @@ class QuestionGenerationPipeline:
         level: Level,
         question_type: QuestionType,
         slot: int | None = None,
-        weakness_summary: str | None = None,
+        generation_context: str | dict[str, Any] | None = None,
         progress_callback: Callable[[str, str], None] | None = None,
     ) -> QuestionSet:
         if self.client is None:
@@ -50,15 +59,25 @@ class QuestionGenerationPipeline:
                 "未配置 DEEPSEEK_API_KEY，无法进行真实 AI 出题。请在 /data/YueJie-CET/.env 中配置后重试。"
             )
 
+        weakness_summary = self._extract_weakness_summary(generation_context)
+        recent_topics = self._extract_recent_topics(generation_context)
+
         self._report(
             progress_callback,
             "blueprint",
             "已锁定四六级题型规范，正在整理题面蓝图与难度控制。",
         )
-        blueprint = self._build_blueprint(level, question_type, slot, weakness_summary)
+        blueprint = self._build_blueprint(
+            level,
+            question_type,
+            slot,
+            weakness_summary,
+            recent_topics,
+        )
         retry_errors: list[str] | None = None
-        last_validation_error: QuestionSetValidationError | None = None
-        for generation_round in range(1, 3):
+        last_error: Exception | None = None
+        max_generation_rounds = 3
+        for generation_round in range(1, max_generation_rounds + 1):
             if generation_round > 1:
                 self._report(
                     progress_callback,
@@ -75,12 +94,17 @@ class QuestionGenerationPipeline:
                     retry_errors=retry_errors,
                 )
             except QuestionSetValidationError as exc:
-                last_validation_error = exc
+                last_error = exc
                 retry_errors = exc.errors
-                if generation_round == 2:
+                if generation_round == max_generation_rounds:
                     raise
-        if last_validation_error is not None:
-            raise last_validation_error
+            except Exception as exc:
+                last_error = exc
+                retry_errors = [str(exc)]
+                if generation_round == max_generation_rounds:
+                    raise RuntimeError(f"AI 出题多轮重试后仍失败：{exc}") from exc
+        if last_error is not None:
+            raise last_error
         raise RuntimeError("AI 出题未能返回可验证的结果。")
 
     def _generate_once(
@@ -150,9 +174,16 @@ class QuestionGenerationPipeline:
         question_type: QuestionType,
         slot: int | None,
         weakness_summary: str | None,
+        recent_topics: list[str] | None = None,
     ) -> dict[str, Any]:
+        anti_repeat_topics = self._anti_repeat_topics(recent_topics)
+        topic_pool = [
+            item
+            for item in self._topic_pool(level, question_type, slot)
+            if item not in anti_repeat_topics
+        ] or self._topic_pool(level, question_type, slot)
         return {
-            "topic": secrets_choice(self._topic_pool(level, question_type, slot)),
+            "topic": secrets_choice(topic_pool),
             "genre": self._genre_for(level, question_type, slot),
             "register": self._register_for(level, question_type, slot),
             "target_word_count": self._target_word_count(level, question_type),
@@ -165,7 +196,36 @@ class QuestionGenerationPipeline:
             "question_id_pattern": self._question_id_pattern(question_type),
             "vocabulary_target_count": self._vocabulary_target_count(question_type),
             "analysis_style": "Chinese only, concise, evidence-based, and useful for CET review.",
+            "anti_repeat_topics": anti_repeat_topics,
         }
+
+    @staticmethod
+    def _extract_weakness_summary(generation_context: str | dict[str, Any] | None) -> str | None:
+        if generation_context is None:
+            return None
+        if isinstance(generation_context, str):
+            return generation_context
+        if isinstance(generation_context, dict):
+            summary = generation_context.get("weakness_summary")
+            if summary is None:
+                return None
+            return str(summary).strip() or None
+        return str(generation_context).strip() or None
+
+    @staticmethod
+    def _extract_recent_topics(generation_context: str | dict[str, Any] | None) -> list[str]:
+        if not isinstance(generation_context, dict):
+            return []
+        recent = generation_context.get("recent_topics", [])
+        if not isinstance(recent, list):
+            return []
+        return [str(item).strip().lower() for item in recent if str(item).strip()]
+
+    @staticmethod
+    def _anti_repeat_topics(recent_topics: list[str] | None) -> list[str]:
+        if not recent_topics:
+            return []
+        return [item.strip().lower() for item in recent_topics if item.strip()]
 
     @staticmethod
     def _question_spec(level: Level, question_type: QuestionType, slot: int | None) -> str:
@@ -600,7 +660,7 @@ class QuestionGenerationPipeline:
             ordered = ["detail", "inference", "detail", "main_idea", "inference"]
         elif question_type is QuestionType.CAREFUL_READING and slot == 2 and level is Level.CET6:
             ordered = ["inference", "detail", "inference", "attitude", "vocabulary_in_context"]
-        return ordered[(index - 1).min(len(ordered) - 1)]
+        return ordered[min(index - 1, len(ordered) - 1)]
 
     @staticmethod
     def _normalize_long_reading_paragraphs(paragraphs: list[str]) -> list[str]:
@@ -1627,16 +1687,30 @@ class SubjectiveEvaluationPipeline:
             raise RuntimeError(
                 "未配置 DEEPSEEK_API_KEY，无法进行写作/翻译 AI 评阅。请在 /data/YueJie-CET/.env 中配置后重试。"
             )
-        payload = self.client.create_json_with_tool_schema(
-            system_prompt=self._system_prompt(),
-            user_prompt=self._user_prompt(question_set, response_text, duration_seconds),
-            tool_name="deliver_subjective_evaluation",
-            tool_description="Return one CET subjective-task evaluation as structured JSON.",
-            parameters_schema=self._tool_schema(question_set),
-            temperature=0.18,
-            max_tokens=2600,
-        )
-        return self._normalize_evaluation_payload(payload, question_set)
+        last_error: SubjectiveEvaluationError | None = None
+        for attempt in range(1, 4):
+            payload = self.client.create_json_with_tool_schema(
+                system_prompt=self._system_prompt(),
+                user_prompt=self._user_prompt(
+                    question_set,
+                    response_text,
+                    duration_seconds,
+                    retry_attempt=attempt,
+                    previous_errors=last_error.errors if last_error else None,
+                ),
+                tool_name="deliver_subjective_evaluation",
+                tool_description="Return one CET subjective-task evaluation as structured JSON.",
+                parameters_schema=self._tool_schema(question_set),
+                temperature=0.18,
+                max_tokens=2600,
+            )
+            try:
+                return self._normalize_evaluation_payload(payload, question_set)
+            except SubjectiveEvaluationError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("AI 评阅未返回有效结果。")
 
     @staticmethod
     def _system_prompt() -> str:
@@ -1651,8 +1725,17 @@ class SubjectiveEvaluationPipeline:
         question_set: QuestionSet,
         response_text: str,
         duration_seconds: int,
+        retry_attempt: int = 1,
+        previous_errors: list[str] | None = None,
     ) -> str:
         task_type = "writing" if question_set.question_type is QuestionType.WRITING else "translation"
+        retry_note = ""
+        if retry_attempt > 1:
+            retry_note = (
+                f"\nRetry attempt: {retry_attempt}.\n"
+                f"Previous structural issues: {json.dumps(previous_errors or [], ensure_ascii=False)}\n"
+                "You must fix those issues and return a fully populated evaluation this time.\n"
+            )
         return (
             f"Evaluate this CET {task_type} response.\n"
             f"Level: {question_set.level.value}\n"
@@ -1662,6 +1745,7 @@ class SubjectiveEvaluationPipeline:
             f"Rubric focus: {json.dumps(question_set.rubric_focus, ensure_ascii=False)}\n"
             f"Suggested time used: {duration_seconds} seconds.\n"
             f"Candidate response:\n{response_text}\n\n"
+            f"{retry_note}"
             "Evaluation requirements:\n"
             "- score on a 15-point CET-style scale.\n"
             "- provide 4 score dimensions tied to the rubric.\n"
@@ -1803,6 +1887,9 @@ class SubjectiveEvaluationPipeline:
         payload: dict[str, Any],
         question_set: QuestionSet,
     ) -> SubjectiveEvaluation:
+        errors = self._validate_evaluation_payload(payload, question_set)
+        if errors:
+            raise SubjectiveEvaluationError(errors)
         score_15 = max(0.0, min(15.0, float(payload.get("score_15", 0.0))))
         estimated_reported = max(0.0, min(106.5, float(payload.get("estimated_reported_score", score_15 / 15 * 106.5))))
         dimensions = [
@@ -1838,3 +1925,82 @@ class SubjectiveEvaluationPipeline:
             high_score_version=high_score_version,
             weakness_tags=weakness_tags[:6],
         )
+
+    def _validate_evaluation_payload(
+        self,
+        payload: dict[str, Any],
+        question_set: QuestionSet,
+    ) -> list[str]:
+        errors: list[str] = []
+        try:
+            score_15 = float(payload.get("score_15", -1))
+        except (TypeError, ValueError):
+            score_15 = -1
+        if not 0.0 <= score_15 <= 15.0:
+            errors.append("score_15 缺失或不在 0-15 范围内")
+
+        overall_feedback = str(payload.get("overall_feedback_zh", "")).strip()
+        if len(overall_feedback) < 12:
+            errors.append("overall_feedback_zh 过短或为空")
+
+        dimensions = payload.get("score_dimensions", [])
+        if not isinstance(dimensions, list) or len(dimensions) != 4:
+            errors.append("score_dimensions 必须正好提供 4 项")
+        else:
+            required = (
+                {"content_relevance", "coherence", "grammar", "lexical_accuracy"}
+                if question_set.question_type is QuestionType.WRITING
+                else {
+                    "translation_accuracy",
+                    "translation_fluency",
+                    "grammar",
+                    "lexical_accuracy",
+                }
+            )
+            names = {str(item.get("name", "")).strip() for item in dimensions if isinstance(item, dict)}
+            if names != required:
+                errors.append("score_dimensions.name 与题型要求不匹配")
+            for item in dimensions:
+                if not isinstance(item, dict):
+                    errors.append("score_dimensions 存在非法项")
+                    continue
+                if len(str(item.get("feedback_zh", "")).strip()) < 6:
+                    errors.append("score_dimensions.feedback_zh 不能为空")
+                    break
+
+        wrong_words = payload.get("wrong_words", [])
+        sentence_rewrites = payload.get("sentence_rewrites", [])
+        sentence_annotations = payload.get("sentence_annotations", [])
+        high_score_version = str(payload.get("high_score_version", "")).strip()
+        weakness_tags = payload.get("weakness_tags", [])
+
+        if not isinstance(wrong_words, list):
+            errors.append("wrong_words 必须为数组")
+        if not isinstance(sentence_rewrites, list):
+            errors.append("sentence_rewrites 必须为数组")
+        if not isinstance(sentence_annotations, list):
+            errors.append("sentence_annotations 必须为数组")
+        if not high_score_version:
+            errors.append("high_score_version 不能为空")
+        if not isinstance(weakness_tags, list) or not weakness_tags:
+            errors.append("weakness_tags 不能为空")
+
+        if sentence_annotations == [] and sentence_rewrites == [] and wrong_words == []:
+            errors.append("批注结果为空，至少应返回逐句批注、改写或错词中的一类")
+
+        for item in sentence_annotations[:3]:
+            if not isinstance(item, dict):
+                errors.append("sentence_annotations 存在非法项")
+                break
+            if not str(item.get("original_sentence", "")).strip():
+                errors.append("sentence_annotations.original_sentence 不能为空")
+                break
+            if not (
+                str(item.get("strengths_zh", "")).strip()
+                or str(item.get("issues_zh", "")).strip()
+                or str(item.get("revised_sentence", "")).strip()
+            ):
+                errors.append("sentence_annotations 至少应包含亮点、问题或改写之一")
+                break
+
+        return errors

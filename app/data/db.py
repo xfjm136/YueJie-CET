@@ -558,3 +558,35 @@ class Database:
                 (level.value, question_type.value, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def recent_question_topics(
+        self,
+        level: Level,
+        question_type: QuestionType,
+        limit: int = 8,
+        slot: int | None = None,
+    ) -> list[str]:
+        with self.managed_connection() as conn:
+            if slot is None:
+                rows = conn.execute(
+                    """
+                    SELECT topic
+                    FROM question_sets
+                    WHERE level = ? AND question_type = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (level.value, question_type.value, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT topic
+                    FROM question_sets
+                    WHERE level = ? AND question_type = ? AND slot = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (level.value, question_type.value, slot, limit),
+                ).fetchall()
+        return [str(row["topic"]).strip().lower() for row in rows if str(row["topic"]).strip()]
