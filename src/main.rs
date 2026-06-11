@@ -2710,6 +2710,7 @@ impl YueJieRustApp {
             .overview
             .latest_weakness_updated_at
             .clone()
+            .map(|value| format_iso_brief(&value))
             .unwrap_or_else(|| "薄弱项暂无更新".to_string());
         let accuracy_series = self.overview.recent_accuracy_series.clone();
         let duration_series: Vec<f64> = self
@@ -3891,7 +3892,7 @@ impl YueJieRustApp {
         let header = Paragraph::new(Text::from(vec![
             Line::from(Span::styled("刷题历史", title_style(palette))),
             Line::from(Span::styled(
-                "这里保留每次训练记录，方便回看解析、词汇和再次作答。",
+                "这里保留每次训练记录；上下切换记录，左右切换操作，Enter 进入解析。",
                 Style::default().fg(palette.muted),
             )),
         ]))
@@ -3946,8 +3947,9 @@ impl YueJieRustApp {
 
         if self.history.is_empty() {
             frame.render_widget(
-                Paragraph::new("还没有历史记录。")
+                Paragraph::new("还没有历史记录。\n先去开始刷题，完成一次作答后这里会自动出现复盘档案。")
                     .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
                     .block(simple_block("历史为空", palette)),
                 chunks[2],
             );
@@ -3970,7 +3972,7 @@ impl YueJieRustApp {
                         )),
                         Line::from(format!(
                             "{} | {} | {:.1}% | {}",
-                            item.submitted_at,
+                            format_iso_brief(&item.submitted_at),
                             format_question_label(&item.question_type, item.slot),
                             item.accuracy * 100.0,
                             seconds_to_text(item.duration_seconds)
@@ -4041,7 +4043,7 @@ impl YueJieRustApp {
                         format_question_label(&selected.question_type, selected.slot),
                         format_level_label(&selected.level)
                     )),
-                    Line::from(format!("时间：{}", selected.submitted_at)),
+                    Line::from(format!("时间：{}", format_iso_brief(&selected.submitted_at))),
                     Line::from(format!(
                         "正确率：{:.1}% | 用时 {}",
                         selected.accuracy * 100.0,
@@ -4477,7 +4479,7 @@ impl YueJieRustApp {
         let header = Paragraph::new(Text::from(vec![
             Line::from(Span::styled("我的薄弱项", title_style(palette))),
             Line::from(Span::styled(
-                "这里会显示同题型累计训练后的能力总结。",
+                "同题型训练达到足够样本后会自动更新；上下切换总结，右侧查看详情。",
                 Style::default().fg(palette.muted),
             )),
         ]))
@@ -4487,8 +4489,9 @@ impl YueJieRustApp {
 
         if self.weakness.is_empty() {
             frame.render_widget(
-                Paragraph::new("还没有足够数据来生成薄弱项。")
+                Paragraph::new("还没有足够数据来生成薄弱项。\n继续做同题型训练，样本累积后会自动生成能力总结。")
                     .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
                     .block(simple_block("暂无数据", palette)),
                 chunks[1],
             );
@@ -4506,7 +4509,7 @@ impl YueJieRustApp {
                     ListItem::new(vec![
                         Line::from(format!(
                             "{} | {}",
-                            item.updated_at,
+                            format_iso_brief(&item.updated_at),
                             format_question_label(&item.question_type, None)
                         )),
                         Line::from(item.summary.clone()),
@@ -4537,7 +4540,7 @@ impl YueJieRustApp {
             let selected = &self.weakness[self.weakness_index];
             frame.render_widget(
                 Paragraph::new(Text::from(vec![
-                    Line::from(format!("更新时间：{}", selected.updated_at)),
+                    Line::from(format!("更新时间：{}", format_iso_brief(&selected.updated_at))),
                     Line::from(format!("等级：{}", format_level_label(&selected.level))),
                     Line::from(format!(
                         "题型：{}",
@@ -4579,7 +4582,7 @@ impl YueJieRustApp {
         let header = Paragraph::new(Text::from(vec![
             Line::from(Span::styled("词汇表", title_style(palette))),
             Line::from(Span::styled(
-                "按刷题历史中的高频重点词汇累计。",
+                "按刷题历史中的高频重点词汇累计；上下切换词条，右侧查看详情。",
                 Style::default().fg(palette.muted),
             )),
         ]))
@@ -4589,8 +4592,9 @@ impl YueJieRustApp {
 
         if self.vocabulary.is_empty() {
             frame.render_widget(
-                Paragraph::new("还没有词汇数据。")
+                Paragraph::new("还没有词汇数据。\n先完成练习和复盘，系统会自动累计高频重点词汇。")
                     .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
                     .block(simple_block("暂无数据", palette)),
                 chunks[1],
             );
@@ -4650,7 +4654,7 @@ impl YueJieRustApp {
                     Line::from(format!("释义：{}", selected.meaning_zh)),
                     Line::from(format!("频次：{}", selected.frequency_score)),
                     Line::from(format!("错题关联：{}", selected.error_related_score)),
-                    Line::from(format!("最近出现：{}", selected.last_seen_at)),
+                    Line::from(format!("最近出现：{}", format_iso_brief(&selected.last_seen_at))),
                     Line::from(""),
                     Line::from(example),
                 ]))
