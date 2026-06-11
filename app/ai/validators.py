@@ -624,7 +624,7 @@ class CETQuestionValidator:
         if "word" not in task_prompt:
             errors.append("写作题 task_prompt 应体现字数要求")
         if not 1 <= len(prompt_lines) <= 3:
-            errors.append("写作题题面应保持为简短的 1-3 行英文提示")
+            errors.append("写作题题面应保持为简短的 1-3 段英文提示")
         if any(re.match(r"^\s*\d+\s*[\.\):\-]", line) for line in prompt_lines):
             errors.append("写作题题面不应使用 1./2./3. 这类详细编号式提示")
 
