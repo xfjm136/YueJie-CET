@@ -487,12 +487,41 @@ impl TypeChoice {
         }
     }
 
-    fn brief(self) -> &'static str {
+    fn estimated_generation_time(self, level: LevelChoice) -> &'static str {
+        match (level, self) {
+            (LevelChoice::Cet4, Self::BankedCloze) => "预计生成 20-35 秒",
+            (LevelChoice::Cet4, Self::LongReading) => "预计生成 45-90 秒",
+            (LevelChoice::Cet4, Self::Careful1) => "预计生成 30-60 秒",
+            (LevelChoice::Cet4, Self::Careful2) => "预计生成 30-60 秒",
+            (LevelChoice::Cet4, Self::Writing) => "预计生成 20-40 秒",
+            (LevelChoice::Cet4, Self::Translation) => "预计生成 20-40 秒",
+            (LevelChoice::Cet6, Self::BankedCloze) => "预计生成 25-45 秒",
+            (LevelChoice::Cet6, Self::LongReading) => "预计生成 60-120 秒",
+            (LevelChoice::Cet6, Self::Careful1) => "预计生成 40-80 秒",
+            (LevelChoice::Cet6, Self::Careful2) => "预计生成 45-90 秒",
+            (LevelChoice::Cet6, Self::Writing) => "预计生成 25-45 秒",
+            (LevelChoice::Cet6, Self::Translation) => "预计生成 25-45 秒",
+        }
+    }
+
+    fn brief(self, level: LevelChoice) -> &'static str {
         match self {
-            Self::BankedCloze => "词性、搭配、上下文逻辑同步考查",
-            Self::LongReading => "信息定位、同义改写、段落匹配",
-            Self::Careful1 => "标准仔细阅读，覆盖主旨到细节",
-            Self::Careful2 => "更强调推断、态度与语境词义",
+            Self::BankedCloze => match level {
+                LevelChoice::Cet4 => "熟悉社会/校园题材下的词性、搭配与逻辑恢复",
+                LevelChoice::Cet6 => "更抽象语篇里的词汇辨析、搭配竞争与逻辑衔接",
+            },
+            Self::LongReading => match level {
+                LevelChoice::Cet4 => "略读查读、信息定位与基础同义改写匹配",
+                LevelChoice::Cet6 => "更长语篇中的论点追踪、证据匹配与深层改写",
+            },
+            Self::Careful1 => match level {
+                LevelChoice::Cet4 => "偏研究/实验/科普，重目的、过程、结果与细节",
+                LevelChoice::Cet6 => "偏商业/市场/职场，重动机、后果、比较与报告发现",
+            },
+            Self::Careful2 => match level {
+                LevelChoice::Cet4 => "偏社会现象/校园生活，重原因、反应、建议与态度",
+                LevelChoice::Cet6 => "偏心理/伦理/科技反思，重推断、例证作用与立场",
+            },
             Self::Writing => "立意、结构、语法与词汇表达",
             Self::Translation => "信息准确、语言自然、语法稳定",
         }
@@ -551,6 +580,12 @@ enum GenerationMessage {
         job_id: u64,
         result: Result<QuestionSet, String>,
     },
+}
+
+#[derive(Clone, Copy)]
+enum TrendMetric {
+    Percentage,
+    Duration,
 }
 
 struct GeneratingTask {
@@ -2566,7 +2601,7 @@ impl YueJieRustApp {
         self.weakness = self.backend.weakness()?.weakness;
         self.weakness_index = 0;
         self.screen = Screen::Weakness;
-        self.status_line = String::from("上下方向键或鼠标选择条目，右侧查看详情。");
+        self.status_line = String::from("上下方向键或鼠标选择总结，右侧查看薄弱项详情与维度分布。");
         Ok(())
     }
 
@@ -2574,7 +2609,7 @@ impl YueJieRustApp {
         self.vocabulary = self.backend.vocabulary()?.vocabulary;
         self.vocabulary_index = 0;
         self.screen = Screen::Vocabulary;
-        self.status_line = String::from("上下方向键或鼠标选择词汇，右侧查看详情。");
+        self.status_line = String::from("上下方向键或鼠标选择词汇，右侧查看释义、频次、错题关联与例句。");
         Ok(())
     }
 
@@ -2700,7 +2735,7 @@ impl YueJieRustApp {
                 Line::from(Span::styled("阅阶 CET", title_style(palette))),
                 Line::from(Span::styled(
                     format!(
-                        "AI 四六级阅读专项训练 · {} · {} · 背景{}",
+                        "AI 四六级阅读、写作与翻译训练 · {} · {} · 背景{}",
                         if self.settings.theme_mode == "dark" {
                             "深色"
                         } else {
@@ -2839,8 +2874,8 @@ impl YueJieRustApp {
         let trend_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(5),
-                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Length(6),
                 Constraint::Min(4),
             ])
             .split(bottom[0]);
@@ -2851,6 +2886,7 @@ impl YueJieRustApp {
             "正确率走势",
             &accuracy_series,
             palette.success,
+            TrendMetric::Percentage,
             Some(100.0),
         );
         self.draw_line_trend_card(
@@ -2860,6 +2896,7 @@ impl YueJieRustApp {
             "用时走势",
             &duration_series,
             palette.warning,
+            TrendMetric::Duration,
             None,
         );
         frame.render_widget(
@@ -2925,9 +2962,10 @@ impl YueJieRustApp {
             Paragraph::new(Text::from(vec![
                 Line::from(Span::styled("今日提示", title_style(palette))),
                 Line::from(""),
-                Line::from("1. 选词填空先看词性与固定搭配。"),
-                Line::from("2. 长篇阅读先扫题干，再回文定位。"),
-                Line::from("3. 仔细阅读优先抓首段和转折句。"),
+                Line::from("1. 选词填空先判词性，再看固定搭配和上下文逻辑。"),
+                Line::from("2. 长篇阅读先扫题干特征，再抓段落功能与同义改写。"),
+                Line::from("3. 仔细阅读 1 多抓研究/结果，仔细阅读 2 多看态度/推断。"),
+                Line::from("4. 写作翻译先保信息准确，再优化句式、衔接与表达。"),
                 Line::from(""),
                 Line::from(format!(
                     "当前配色：{}",
@@ -3098,10 +3136,12 @@ impl YueJieRustApp {
             )),
             Line::from(Span::styled(
                 format!(
-                    "{} · {} · {} · 已等待 {}",
+                    "{} · {} · {} · {} · 已等待 {}",
                     self.selected_level.label(),
                     self.selected_type.section_label(),
                     self.selected_type.label(),
+                    self.selected_type
+                        .estimated_generation_time(self.selected_level),
                     seconds_to_text(elapsed as i64)
                 ),
                 Style::default().fg(palette.muted),
@@ -3134,7 +3174,7 @@ impl YueJieRustApp {
             .split(chunks[2]);
         let left = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(6)])
+            .constraints([Constraint::Length(7), Constraint::Min(6)])
             .split(body[0]);
         let right = Layout::default()
             .direction(Direction::Vertical)
@@ -3144,8 +3184,12 @@ impl YueJieRustApp {
         let mut status_lines = vec![
             Line::from(Span::styled("当前状态", title_style(palette))),
             Line::from(self.generation_message.clone()),
-            Line::from(format!("题型特征：{}", self.selected_type.brief())),
+            Line::from(format!(
+                "题型特征：{}",
+                self.selected_type.brief(self.selected_level)
+            )),
             Line::from(self.selected_type.recommended_time()),
+            Line::from(self.selected_type.estimated_generation_time(self.selected_level)),
         ];
         if self.generation_error_message.is_some() {
             status_lines.push(Line::from("本页可直接重试，无需重新选择题型。"));
@@ -5694,6 +5738,7 @@ impl YueJieRustApp {
         title: &str,
         series: &[f64],
         color: Color,
+        metric: TrendMetric,
         fixed_upper_bound: Option<f64>,
     ) {
         let block = simple_block(title, palette);
@@ -5707,37 +5752,54 @@ impl YueJieRustApp {
         let sampled = sample_series_for_width(series, max_points.max(1));
         if sampled.is_empty() {
             frame.render_widget(
-                Paragraph::new("暂无走势数据")
+                Paragraph::new("暂无走势数据\n先开始训练，图表会自动累积最近记录。")
                     .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
                     .style(Style::default().fg(palette.muted)),
                 inner,
             );
             return;
         }
 
-        let max_y = fixed_upper_bound.unwrap_or_else(|| {
-            sampled
-                .iter()
-                .map(|(_, value)| *value)
-                .fold(1.0f64, f64::max)
-                .max(1.0)
-        });
-        let upper = if max_y <= 0.0 { 1.0 } else { max_y * 1.08 };
+        let min_sample = sampled
+            .iter()
+            .map(|(_, value)| *value)
+            .fold(f64::INFINITY, f64::min);
+        let max_sample = sampled
+            .iter()
+            .map(|(_, value)| *value)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let (lower, upper) = if let Some(bound) = fixed_upper_bound {
+            (0.0, bound.max(1.0))
+        } else {
+            let spread = (max_sample - min_sample).abs();
+            let padding = (spread * 0.2).max(1.0);
+            let lower = (min_sample - padding).max(0.0);
+            let upper = (max_sample + padding).max(lower + 1.0);
+            (lower, upper)
+        };
         let last_value = sampled.last().map(|(_, value)| *value).unwrap_or(0.0);
+        let first_value = sampled.first().map(|(_, value)| *value).unwrap_or(last_value);
+        let delta = last_value - first_value;
         let chart_area = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
-        let chart_style = Style::default().bg(palette.panel);
+        let chart_style = Style::default().bg(palette.panel_alt);
         frame.render_widget(
             Paragraph::new(String::new()).style(chart_style),
             chart_area[0],
         );
 
         let dataset = Dataset::default()
-            .marker(symbols::Marker::Braille)
+            .marker(symbols::Marker::Dot)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(color).bg(palette.panel))
+            .style(
+                Style::default()
+                    .fg(color)
+                    .bg(palette.panel_alt)
+                    .add_modifier(Modifier::BOLD),
+            )
             .data(&sampled);
         frame.render_widget(
             Chart::new(vec![dataset])
@@ -5745,32 +5807,53 @@ impl YueJieRustApp {
                 .x_axis(
                     Axis::default()
                         .bounds([0.0, (sampled.len().saturating_sub(1)) as f64])
-                        .style(Style::default().fg(palette.muted).bg(palette.panel))
+                        .style(Style::default().fg(palette.muted).bg(palette.panel_alt))
                         .labels(Vec::<Span>::new()),
                 )
                 .y_axis(
                     Axis::default()
-                        .bounds([0.0, upper])
-                        .style(Style::default().fg(palette.muted).bg(palette.panel))
+                        .bounds([lower, upper])
+                        .style(Style::default().fg(palette.muted).bg(palette.panel_alt))
                         .labels(Vec::<Span>::new()),
                 ),
             chart_area[0],
         );
 
-        let footer = if series.len() > sampled.len() {
-            format!(
-                "显示最近 {} / {} 次 | 最新 {:.1}",
-                sampled.len(),
-                series.len(),
-                last_value
-            )
+        let footer_lead = if series.len() > sampled.len() {
+            format!("近 {} / {} 次", sampled.len(), series.len())
         } else {
-            format!("显示最近 {} 次 | 最新 {:.1}", sampled.len(), last_value)
+            format!("近 {} 次", sampled.len())
+        };
+        let (delta_symbol, delta_color) = trend_delta_visual(metric, delta, palette);
+        let footer = if sampled.len() >= 2 {
+            Line::from(vec![
+                Span::styled(footer_lead, Style::default().fg(palette.muted)),
+                Span::raw("  "),
+                Span::styled(
+                    format!("最新 {}", trend_value_text(metric, last_value)),
+                    Style::default().fg(palette.text),
+                ),
+                Span::raw("  "),
+                Span::styled(delta_symbol, Style::default().fg(delta_color)),
+                Span::styled(
+                    format!(" {}", trend_delta_text(metric, delta)),
+                    Style::default().fg(delta_color),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(footer_lead, Style::default().fg(palette.muted)),
+                Span::raw("  "),
+                Span::styled(
+                    format!("最新 {}", trend_value_text(metric, last_value)),
+                    Style::default().fg(palette.text),
+                ),
+            ])
         };
         frame.render_widget(
-            Paragraph::new(footer)
+            Paragraph::new(Text::from(vec![footer]))
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(palette.muted).bg(palette.panel)),
+                .style(Style::default().bg(palette.panel_alt)),
             chart_area[1],
         );
     }
@@ -5802,6 +5885,7 @@ impl YueJieRustApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -5841,10 +5925,16 @@ impl YueJieRustApp {
             chunks[2],
         );
         frame.render_widget(
+            Paragraph::new(action_type.estimated_generation_time(self.selected_level))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(palette.accent)),
+            chunks[3],
+        );
+        frame.render_widget(
             Gauge::default()
                 .ratio((card.recent_accuracy_percent / 100.0).clamp(0.0, 1.0))
                 .gauge_style(Style::default().fg(palette.success).bg(palette.panel_alt)),
-            chunks[3],
+            chunks[4],
         );
         frame.render_widget(
             Paragraph::new(format!(
@@ -5854,7 +5944,7 @@ impl YueJieRustApp {
             ))
             .alignment(Alignment::Center)
             .style(Style::default().fg(palette.warning)),
-            chunks[4],
+            chunks[5],
         );
         let accuracy_series = if card.recent_accuracy_series.is_empty() {
             vec![0.0]
@@ -5870,13 +5960,13 @@ impl YueJieRustApp {
                 .data(&spark_values)
                 .bar_set(symbols::bar::NINE_LEVELS)
                 .style(Style::default().fg(palette.warning)),
-            chunks[5],
+            chunks[6],
         );
         frame.render_widget(
-            Paragraph::new(action_type.brief())
+            Paragraph::new(action_type.brief(self.selected_level))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(palette.text)),
-            chunks[6],
+            chunks[7],
         );
         self.click_areas.push(ClickArea {
             rect: area,
@@ -6657,6 +6747,36 @@ fn mini_ratio_bar(ratio: f64, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
 }
 
+fn trend_value_text(metric: TrendMetric, value: f64) -> String {
+    match metric {
+        TrendMetric::Percentage => format!("{value:.1}%"),
+        TrendMetric::Duration => seconds_to_text(value.round() as i64),
+    }
+}
+
+fn trend_delta_text(metric: TrendMetric, delta: f64) -> String {
+    match metric {
+        TrendMetric::Percentage => format!("{:+.1}%", delta),
+        TrendMetric::Duration => {
+            let sign = if delta >= 0.0 { "+" } else { "-" };
+            format!("{sign}{}", seconds_to_text(delta.abs().round() as i64))
+        }
+    }
+}
+
+fn trend_delta_visual(metric: TrendMetric, delta: f64, palette: Palette) -> (&'static str, Color) {
+    let epsilon = 0.05;
+    if delta.abs() < epsilon {
+        return ("→", palette.muted);
+    }
+    match metric {
+        TrendMetric::Percentage if delta > 0.0 => ("↑", palette.success),
+        TrendMetric::Percentage => ("↓", palette.warning),
+        TrendMetric::Duration if delta < 0.0 => ("↓", palette.success),
+        TrendMetric::Duration => ("↑", palette.warning),
+    }
+}
+
 fn sample_series_for_width(series: &[f64], max_points: usize) -> Vec<(f64, f64)> {
     if series.is_empty() || max_points == 0 {
         return Vec::new();
@@ -7070,6 +7190,30 @@ mod tests {
     fn generation_phase_labels_are_human_readable() {
         assert_eq!(format_generation_phase("generate_request"), "正式出题");
         assert_eq!(format_generation_phase("repair"), "结构修复");
+    }
+
+    #[test]
+    fn estimated_generation_time_labels_match_major_types() {
+        assert_eq!(
+            TypeChoice::BankedCloze.estimated_generation_time(LevelChoice::Cet4),
+            "预计生成 20-35 秒"
+        );
+        assert_eq!(
+            TypeChoice::LongReading.estimated_generation_time(LevelChoice::Cet6),
+            "预计生成 60-120 秒"
+        );
+        assert_eq!(
+            TypeChoice::Careful2.estimated_generation_time(LevelChoice::Cet6),
+            "预计生成 45-90 秒"
+        );
+    }
+
+    #[test]
+    fn trend_helpers_format_percentage_and_duration_as_expected() {
+        assert_eq!(trend_value_text(TrendMetric::Percentage, 83.25), "83.2%");
+        assert_eq!(trend_value_text(TrendMetric::Duration, 125.0), "02:05");
+        assert_eq!(trend_delta_text(TrendMetric::Percentage, 4.2), "+4.2%");
+        assert_eq!(trend_delta_text(TrendMetric::Duration, -18.0), "-00:18");
     }
 
     #[test]

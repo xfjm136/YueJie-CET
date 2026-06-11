@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.domain.enums import BackgroundMode, Level, QuestionType, ThemeMode
 
 APP_NAME = "阅阶 CET"
-APP_SUBTITLE = "AI 四六级阅读专项训练"
+APP_SUBTITLE = "AI 四六级阅读、写作与翻译训练"
 MIN_TERMINAL_WIDTH = 120
 MIN_TERMINAL_HEIGHT = 34
 DEFAULT_MODEL = "deepseek-v4-pro"
