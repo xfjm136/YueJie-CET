@@ -226,7 +226,8 @@ yuejie-cet
    - `target/release/yuejie-cet-rs`
    - `target/debug/yuejie-cet-rs`
    则自动启动较新的一个
-3. 如果本地尚未编译 Rust 二进制，则回退到仓库内保留的 Python Textual 旧界面
+3. 如果尚未找到可执行文件，则尝试在仓库根目录调用 `cargo run --release`
+4. 如果当前环境既没有已编译的二进制，也无法调用 Cargo，则提示先执行 `cargo build --release`
 
 ## 配置说明
 
@@ -327,7 +328,7 @@ python -m app.bridge submit
 src/
   main.rs                  Rust TUI 主前端
 app/
-  main.py                  启动入口，优先拉起 Rust 前端
+  main.py                  启动入口，仅负责拉起 Rust 前端
   bridge.py                Rust <-> Python JSON CLI bridge
   ai/                      DeepSeek 客户端、Prompt、生成与评分流水线
   config.py                .env 加载与运行配置
@@ -335,7 +336,6 @@ app/
   data/                    SQLite 初始化与查询
   domain/                  枚举、数据模型、评分结构
   services/                出题、作答、统计、薄弱项服务
-  ui/                      保留的 Python Textual 旧界面
 tests/                     Python 单元测试
 screenshot/                README 与展示用截图
 data/                      默认数据库目录
@@ -359,7 +359,7 @@ data/                      默认数据库目录
 - 题目由 AI 生成，目标是 **CET 风格 / CET 约束下的高质量练习题**，不是官方原卷复刻
 - 出题与评分依赖外部 API，可用性受网络与模型状态影响
 - 阅读题生成成功率仍在持续优化中，但不会通过放松 CET 结构标准来“假性提高成功率”
-- Python Textual 界面仍保留在仓库中，但默认目标体验是 Rust 前端
+- Python 侧现在只保留 AI、桥接、数据库与评分后端，不再维护单独的 Python TUI
 
 ### 适合谁
 

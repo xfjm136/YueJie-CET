@@ -5,11 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yuejie-cet"
 version = "0.1.0"
-description = "AI-powered CET reading trainer with a Textual TUI."
+description = "Rust TUI CET trainer with a Python AI bridge."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "textual>=0.58,<2.0",
   "httpx>=0.27,<1.0",
 ]
 
@@ -21,4 +20,3 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["app*"]
-

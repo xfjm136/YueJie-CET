@@ -2848,7 +2848,7 @@ impl YueJieRustApp {
             stat_chunks[1],
             palette,
             "表现指数",
-            &format!("{:.1}%", recent_performance_percent),
+            &format!("{:.1}", recent_performance_percent),
             &format!(
                 "原始正确率 {:.1}% · 已按题型难度归一",
                 raw_recent_accuracy_percent
@@ -2860,7 +2860,7 @@ impl YueJieRustApp {
             stat_chunks[2],
             palette,
             "节奏匹配",
-            &format!("{:.1}%", recent_pace_percent),
+            &format!("{:.1}", recent_pace_percent),
             &format!("原始均时 {} · 已按题型用时归一", raw_recent_duration_text),
             Some(recent_pace_ratio),
         );
