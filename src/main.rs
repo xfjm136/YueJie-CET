@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -801,6 +801,12 @@ struct BackendBridge {
     python_bin: PathBuf,
 }
 
+struct CollectedOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 impl BackendBridge {
     fn new() -> Result<Self> {
         let root = find_project_root().context("failed to locate project root")?;
@@ -843,28 +849,13 @@ impl BackendBridge {
             let mut stdin = child.stdin.take().context("failed to open bridge stdin")?;
             stdin.write_all(payload.to_string().as_bytes())?;
         }
-        let start = Instant::now();
-        let output = loop {
-            if let Some(status) = child.try_wait()? {
-                let output = child.wait_with_output()?;
-                if !status.success() && output.stdout.is_empty() && !output.stderr.is_empty() {
-                    return Err(anyhow!(
-                        "bridge command failed: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    ));
-                }
-                break output;
-            }
-            if start.elapsed() >= timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(anyhow!(
-                    "bridge command timed out after {}s",
-                    timeout.as_secs()
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let output = wait_for_child_output(child, timeout)?;
+        if !output.status.success() && output.stdout.is_empty() && !output.stderr.is_empty() {
+            return Err(anyhow!(
+                "bridge command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1527,6 +1518,53 @@ impl BackendBridge {
         self.run_bridge(&["set-setting", "--key", key, "--value", value], None)?;
         Ok(())
     }
+}
+
+fn wait_for_child_output(mut child: Child, timeout: Duration) -> Result<CollectedOutput> {
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to capture bridge stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to capture bridge stderr")?;
+    let stdout_handle = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = BufReader::new(stdout).read_to_end(&mut buffer);
+        buffer
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = BufReader::new(stderr).read_to_end(&mut buffer);
+        buffer
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            return Err(anyhow!(
+                "bridge command timed out after {}s",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+    Ok(CollectedOutput {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 #[derive(Clone)]
@@ -10258,5 +10296,20 @@ mod tests {
         session.started_instant = Instant::now() - Duration::from_secs(12 * 60);
         session.lock_writing();
         assert_eq!(session.total_remaining_seconds(), 70 * 60);
+    }
+
+    #[test]
+    fn wait_for_child_output_handles_large_stdout_without_deadlock() {
+        let mut command = Command::new("python");
+        command
+            .arg("-c")
+            .arg("import sys; sys.stdout.write('x' * 70000)")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = command.spawn().expect("spawn python for large stdout test");
+        let output = wait_for_child_output(child, Duration::from_secs(5))
+            .expect("collect large stdout without blocking");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 70_000);
     }
 }
