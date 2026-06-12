@@ -2605,19 +2605,18 @@ impl YueJieRustApp {
                 }
             }
             Screen::Submitting => {
-                if let Some(task) = &self.submitting_task {
-                    task.cancel_flag.store(true, Ordering::Relaxed);
+                if self.submission_context == SubmissionContext::MockExam {
+                    self.status_line = String::from(
+                        "整套模拟四六级考试评分正在进行或等待重试，当前不会返回可编辑作答界面。",
+                    );
+                } else {
+                    if let Some(task) = &self.submitting_task {
+                        task.cancel_flag.store(true, Ordering::Relaxed);
+                    }
+                    self.submitting_task = None;
+                    self.screen = Screen::Practice;
+                    self.status_line = String::from("已取消本次评分，返回作答界面。");
                 }
-                if let Some(task) = &self.mock_exam_submitting_task {
-                    task.cancel_flag.store(true, Ordering::Relaxed);
-                }
-                self.submitting_task = None;
-                self.mock_exam_submitting_task = None;
-                if let Some(session) = &mut self.mock_exam_session {
-                    session.resume_from_waiting();
-                }
-                self.screen = Screen::Practice;
-                self.status_line = String::from("已取消本次评分，返回作答界面。");
             }
             Screen::Practice => {
                 if self.mock_exam_session.is_some() {
@@ -3177,7 +3176,10 @@ impl YueJieRustApp {
                 self.start_generation()?;
             }
             Action::RetrySubmission => {
-                self.start_submission()?;
+                match self.submission_context {
+                    SubmissionContext::Practice => self.start_submission_internal(true)?,
+                    SubmissionContext::MockExam => self.submit_mock_exam_internal(true)?,
+                }
             }
             Action::BackHome => self.return_home()?,
             Action::BackType => self.open_type_screen()?,
@@ -4725,21 +4727,44 @@ impl YueJieRustApp {
                 Constraint::Length(1),
             ])
             .split(outer);
-        let elapsed = self
-            .submitting_task
-            .as_ref()
-            .map(|task| task.started_at.elapsed().as_secs())
-            .unwrap_or(0);
+        let is_mock_exam = self.submission_context == SubmissionContext::MockExam;
+        let elapsed = if is_mock_exam {
+            self.mock_exam_submitting_task
+                .as_ref()
+                .map(|task| task.started_at.elapsed().as_secs())
+                .unwrap_or(0)
+        } else {
+            self.submitting_task
+                .as_ref()
+                .map(|task| task.started_at.elapsed().as_secs())
+                .unwrap_or(0)
+        };
         let active_index = submission_step_index(&self.submission_phase);
-        let steps = [
-            ("准备评分", "读取答案、题型和评分维度"),
-            ("请求评分", "向 DeepSeek 发送主观题评阅请求"),
-            ("整理批注", "抽取错词、语病与逐句反馈"),
-            ("保存结果", "写入记录、词汇与薄弱项"),
-        ];
+        let steps = if is_mock_exam {
+            [
+                ("准备整卷", "读取六个部分答案、分值与用时"),
+                ("请求评分", "向 DeepSeek 发送整套模拟四六级考试评阅请求"),
+                ("整理总评", "汇总分项得分、弱势点与整套建议"),
+                ("保存结果", "写入历史、词汇与模拟四六级考试弱势"),
+            ]
+        } else {
+            [
+                ("准备评分", "读取答案、题型和评分维度"),
+                ("请求评分", "向 DeepSeek 发送主观题评阅请求"),
+                ("整理批注", "抽取错词、语病与逐句反馈"),
+                ("保存结果", "写入记录、词汇与薄弱项"),
+            ]
+        };
 
         let header = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled("AI 正在评分与批注", title_style(palette))),
+            Line::from(Span::styled(
+                if is_mock_exam {
+                    "AI 正在评分整套模拟四六级考试"
+                } else {
+                    "AI 正在评分与批注"
+                },
+                title_style(palette),
+            )),
             Line::from(Span::styled(
                 format!("已等待 {}", seconds_to_text(elapsed as i64)),
                 Style::default().fg(palette.muted),
@@ -4783,10 +4808,18 @@ impl YueJieRustApp {
             Line::from(Span::styled("当前状态", title_style(palette))),
             Line::from(self.submission_message.clone()),
             Line::from(""),
-            Line::from("评分将生成：总评、错词、病句改写、逐句批注与高分版本。"),
+            Line::from(if is_mock_exam {
+                "评分将生成：整套总评、分项得分、弱势分析与提升建议。".to_string()
+            } else {
+                "评分将生成：总评、错词、病句改写、逐句批注与高分版本。".to_string()
+            }),
         ];
         if self.submission_error_message.is_some() {
-            status_lines.push(Line::from("你的作答内容仍保留在内存中，可直接重试评分。"));
+            status_lines.push(Line::from(if is_mock_exam {
+                "已交卷答案仍保留在内存中，系统不会返回可编辑作答界面。".to_string()
+            } else {
+                "你的作答内容仍保留在内存中，可直接重试评分。".to_string()
+            }));
         }
         frame.render_widget(
             Paragraph::new(Text::from(status_lines))
@@ -4811,7 +4844,11 @@ impl YueJieRustApp {
             step_lines.push(Line::from(format!("{} {}  {}", marker, title, detail)));
         }
         step_lines.push(Line::from(""));
-        step_lines.push(Line::from("Esc 可取消返回；已取消时不会写入半成品。"));
+        step_lines.push(Line::from(if is_mock_exam {
+            "系统会在本页原地自动重试；最终交卷后不会再返回可编辑作答界面。".to_string()
+        } else {
+            "Esc 可取消返回；已取消时不会写入半成品。".to_string()
+        }));
         frame.render_widget(
             Paragraph::new(Text::from(step_lines))
                 .wrap(Wrap { trim: false })
@@ -4822,23 +4859,50 @@ impl YueJieRustApp {
         let orbit = generation_orbit_frame(self.generating_tick);
         let wave = generation_wave_frame(self.generating_tick);
         let wait_hint = if elapsed >= 90 {
-            "等待较久时，多数情况是远端模型仍在生成评分与逐句批注。"
+            if is_mock_exam {
+                "等待较久时，多数情况是远端模型仍在生成整套总评与分项分析。"
+            } else {
+                "等待较久时，多数情况是远端模型仍在生成评分与逐句批注。"
+            }
         } else if elapsed >= 45 {
-            "主观题评分通常比客观题更慢，因为还要整理错词、语病和高分版本。"
+            if is_mock_exam {
+                "整套模拟四六级考试会同时整合多个部分的结果，等待略长属于正常现象。"
+            } else {
+                "主观题评分通常比客观题更慢，因为还要整理错词、语病和高分版本。"
+            }
         } else {
-            "Rust 前端保持响应，AI 评分与批注仍在后台继续执行。"
+            if is_mock_exam {
+                "Rust 前端保持响应，AI 整卷评分与总评整理仍在后台继续执行。"
+            } else {
+                "Rust 前端保持响应，AI 评分与批注仍在后台继续执行。"
+            }
         };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
-                Line::from(Span::styled("批注引擎", title_style(palette))),
+                Line::from(Span::styled(
+                    if is_mock_exam { "整卷评阅引擎" } else { "批注引擎" },
+                    title_style(palette),
+                )),
                 Line::from(format!(
                     "{}  {}",
                     orbit,
                     format_submission_phase(&self.submission_phase)
                 )),
-                Line::from(format!("{}  正在生成总评、逐句批注与改写参考", wave)),
+                Line::from(format!(
+                    "{}  {}",
+                    wave,
+                    if is_mock_exam {
+                        "正在生成整套总评、分项得分与弱势分析"
+                    } else {
+                        "正在生成总评、逐句批注与改写参考"
+                    }
+                )),
                 Line::from(wait_hint),
-                Line::from("实时心跳会持续刷新状态。"),
+                Line::from(if is_mock_exam {
+                    "实时心跳会持续刷新状态，自动重试会在本页原地完成。"
+                } else {
+                    "实时心跳会持续刷新状态。"
+                }),
             ]))
             .wrap(Wrap { trim: false })
             .block(simple_block("", palette)),
@@ -4862,7 +4926,12 @@ impl YueJieRustApp {
                 log_lines.push(Line::from(error.clone()));
                 log_lines.push(Line::from(""));
             }
-            log_lines.push(Line::from("建议先按 R / Enter 重试；按 Esc 可返回继续修改答案。"));
+            log_lines.push(Line::from(if is_mock_exam {
+                "建议先按 R / Enter 继续重试；整套交卷后不会再返回可编辑作答界面。"
+                    .to_string()
+            } else {
+                "建议先按 R / Enter 重试；按 Esc 可返回继续修改答案。".to_string()
+            }));
             frame.render_widget(
                 Paragraph::new(Text::from(log_lines))
                     .wrap(Wrap { trim: false }),
@@ -4884,9 +4953,13 @@ impl YueJieRustApp {
                 frame,
                 buttons[1],
                 palette,
-                "返回作答",
+                if is_mock_exam { "继续重试" } else { "返回作答" },
                 false,
-                Action::PracticeBack,
+                if is_mock_exam {
+                    Action::RetrySubmission
+                } else {
+                    Action::PracticeBack
+                },
             );
         } else {
             let mut log_lines = vec![
@@ -5078,6 +5151,7 @@ impl YueJieRustApp {
                 Constraint::Length(4),
                 Constraint::Length(6),
                 Constraint::Length(3),
+                Constraint::Length(3),
                 Constraint::Min(3),
             ])
             .split(area);
@@ -5140,33 +5214,51 @@ impl YueJieRustApp {
             chunks[2],
         );
 
-        self.draw_action_button(
-            frame,
-            chunks[3],
-            palette,
-            if session.writing_locked {
-                "最终交卷"
-            } else {
-                "提交作文"
-            },
-            false,
-            if session.writing_locked {
-                Action::MockExamSubmit
-            } else {
-                Action::SubmitPractice
-            },
-        );
+        if session.writing_locked {
+            self.draw_action_button(
+                frame,
+                chunks[3],
+                palette,
+                "保存当前部分",
+                false,
+                Action::SubmitPractice,
+            );
+            self.draw_action_button(
+                frame,
+                chunks[4],
+                palette,
+                "最终交卷",
+                false,
+                Action::MockExamSubmit,
+            );
+        } else {
+            self.draw_action_button(
+                frame,
+                chunks[3],
+                palette,
+                "提交作文",
+                false,
+                Action::SubmitPractice,
+            );
+            frame.render_widget(
+                Paragraph::new("作文提交后将锁定，随后可切换其余题型。")
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
+                    .block(simple_block("", palette)),
+                chunks[4],
+            );
+        }
 
         frame.render_widget(
             Paragraph::new(if session.writing_locked {
-                "Ctrl+S / 按钮交卷 | F1-F6 切换题型 | 等待页不计时"
+                "Ctrl+S 保存当前部分 | F1-F6 切换题型 | 等待页不计时"
             } else {
                 "Ctrl+S 提交作文 | 作文 30 分钟后自动锁定"
             })
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
             .block(simple_block("", palette)),
-            chunks[4],
+            chunks[5],
         );
     }
 
@@ -7392,7 +7484,7 @@ impl YueJieRustApp {
             palette,
             "返回题型",
             false,
-            Action::PracticeBack,
+            Action::BackType,
         );
         frame.render_widget(
             Paragraph::new(if practice.question_set.questions.is_empty() {

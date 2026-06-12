@@ -357,6 +357,7 @@ class QuestionGenerationPipeline:
                 f"CET writing task. Write an English essay of at least {min_words} words but no more than {max_words} words. "
                 f"{style_hint} "
                 "Provide an exam-style task prompt in English, one brief content prompt paragraph, a high-scoring sample essay, and rubric focus tags. "
+                "Any example prompt shapes are format anchors only. Do not reuse example topic nouns, sentence bodies, or near-copy phrasings; create a fresh but equally official-looking task. "
                 "For CET4, strongly prefer prompts that look like short official exam instructions built around a campus or social situation, often beginning with 'Suppose ...' and continuing with 'You are now to write ...'. "
                 "For CET4, prefer the compact official pattern of one situational sentence, one 'You are now to write ...' sentence, one time sentence, and one word-count sentence, all merged into one paragraph. "
                 "Avoid adding extra debate lead-ins such as 'Some argue ... while others ...' unless the prompt absolutely requires that setup. "
@@ -2014,29 +2015,36 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.WRITING:
             return (
                 [
-                    "improving the work of the student union",
-                    "making the best use of on-campus resources",
-                    "students' cross-cultural communication abilities",
-                    "the necessity of making College Chinese a compulsory course",
-                    "the appropriate use of AI technology in assisting learning",
-                    "academic writing as a required university skill",
-                    "improving campus volunteer or student-support services",
-                    "better use of university library and learning resources",
-                    "ways to enrich student life through campus organizations",
-                    "how universities can better support students' academic development",
+                    "student life improvement and campus services",
+                    "better use of on-campus learning resources",
+                    "cross-cultural communication and student growth",
+                    "curriculum design and general education",
+                    "appropriate use of AI in learning support",
+                    "academic development and study habits",
+                    "volunteering, mutual help, and student community",
+                    "library use, reading habits, and independent learning",
+                    "campus organizations and student participation",
+                    "university support for academic or personal development",
+                    "public speaking, communication, and student confidence",
+                    "healthy digital habits in university life",
+                    "student feedback and service improvement",
+                    "time management and effective learning",
+                    "practical skills and university education",
                 ]
                 if level is Level.CET4
                 else [
-                    "young people, the Chinese Dream, and self-worth",
-                    "teachers' influence on academic pursuit and personal development",
-                    "preparing for challenges in a competitive world",
-                    "using social media properly and responsibly",
-                    "preparing for increasingly demanding job applications",
-                    "AI technology and its impact on human creativity or communication",
-                    "independent thinking in a changing technological world",
-                    "competition, preparation, and personal development",
-                    "education, opportunity, and self-development",
-                    "responsibility, judgment, and modern public life",
+                    "young people, opportunity, and self-worth",
+                    "teachers, education, and personal development",
+                    "preparation for challenges in a competitive world",
+                    "responsible use of media and technology",
+                    "career preparation and long-term growth",
+                    "AI technology, creativity, and independent thinking",
+                    "competition, pressure, and personal maturity",
+                    "education, responsibility, and social contribution",
+                    "efficiency, reflection, and human judgment",
+                    "self-discipline and long-term development",
+                    "learning, growth, and future challenges",
+                    "technology, convenience, and human values",
                 ]
             )
         if question_type is QuestionType.TRANSLATION:
