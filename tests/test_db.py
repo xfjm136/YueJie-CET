@@ -467,6 +467,38 @@ class DatabaseTests(unittest.TestCase):
             self.assertTrue(mock_snapshots)
             self.assertIn("based_on_exam_count", mock_snapshots[0])
 
+    def test_mock_exam_allows_blank_subjective_section_and_scores_zero(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+
+            writing_set = build_subjective_question_set(QuestionType.WRITING)
+            db.save_question_set(writing_set)
+
+            weakness_service = WeaknessService(db)
+            mock_exam_service = MockExamService(db, weakness_service)
+            started_at = datetime.now(timezone.utc) - timedelta(minutes=40)
+
+            record = mock_exam_service.submit_mock_exam(
+                level=Level.CET4,
+                sections=[
+                    {
+                        "question_set_id": writing_set.id,
+                        "answers": {"response_text": ""},
+                        "duration_seconds": 1800,
+                    }
+                ],
+                started_at=started_at,
+                submitted_at=started_at + timedelta(minutes=30),
+            )
+
+            self.assertEqual(len(record.sections), 1)
+            section = record.sections[0]
+            self.assertEqual(section.result.accuracy, 0.0)
+            self.assertIsNotNone(section.result.subjective_evaluation)
+            self.assertEqual(section.result.subjective_evaluation.score_15, 0.0)
+            self.assertIn("未作答", section.result.summary)
+
 
 if __name__ == "__main__":
     unittest.main()

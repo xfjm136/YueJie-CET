@@ -14,6 +14,7 @@ from app.domain.schemas import (
     AttemptResult,
     MockExamRecord,
     MockExamSectionRecord,
+    SubjectiveEvaluation,
     VocabularyItem,
     make_id,
 )
@@ -75,42 +76,47 @@ class MockExamService:
             if question_set.is_subjective:
                 response_text = answers.get("response_text", "").strip()
                 if not response_text:
-                    raise ValueError("missing response_text for mock exam subjective section")
-                if self.subjective_evaluator is None:
-                    raise RuntimeError("subjective evaluator is not configured")
-                evaluation = self.subjective_evaluator.evaluate(
-                    question_set=question_set,
-                    response_text=response_text,
-                    duration_seconds=section_duration_seconds,
-                    exam_mode=True,
-                )
-                result = AttemptResult(
-                    id=make_id("mock_attempt"),
-                    question_set_id=question_set.id,
-                    correct_count=0,
-                    total_count=0,
-                    accuracy=round(evaluation.score_15 / 15.0, 4),
-                    duration_seconds=section_duration_seconds,
-                    summary=evaluation.overall_feedback_zh,
-                    recommendations=[
-                        f"{SKILL_LABELS.get(tag, tag)}：{SKILL_ADVICE.get(tag, SKILL_ADVICE['general'])}"
-                        for tag in evaluation.weakness_tags
-                    ] or ["优先根据批注重写并修正高频语法与词汇问题。"],
-                    question_results=[
-                        AttemptQuestionResult(
-                            question_id=f"subjective-{index + 1}",
-                            user_answer=item.original_sentence,
-                            correct_answer=item.revised_sentence,
-                            is_correct=False,
-                            explanation=item.reason_zh,
-                            skill_tag=item.skill_tag,
-                        )
-                        for index, item in enumerate(evaluation.sentence_rewrites)
-                    ],
-                    subjective_evaluation=evaluation,
-                )
-                for tag in evaluation.weakness_tags:
-                    wrong_skills[tag] += 1
+                    result = self._blank_subjective_result(
+                        question_set=question_set,
+                        duration_seconds=section_duration_seconds,
+                    )
+                else:
+                    if self.subjective_evaluator is None:
+                        raise RuntimeError("subjective evaluator is not configured")
+                    evaluation = self.subjective_evaluator.evaluate(
+                        question_set=question_set,
+                        response_text=response_text,
+                        duration_seconds=section_duration_seconds,
+                        exam_mode=True,
+                    )
+                    result = AttemptResult(
+                        id=make_id("mock_attempt"),
+                        question_set_id=question_set.id,
+                        correct_count=0,
+                        total_count=0,
+                        accuracy=round(evaluation.score_15 / 15.0, 4),
+                        duration_seconds=section_duration_seconds,
+                        summary=evaluation.overall_feedback_zh,
+                        recommendations=[
+                            f"{SKILL_LABELS.get(tag, tag)}：{SKILL_ADVICE.get(tag, SKILL_ADVICE['general'])}"
+                            for tag in evaluation.weakness_tags
+                        ] or ["优先根据批注重写并修正高频语法与词汇问题。"],
+                        question_results=[
+                            AttemptQuestionResult(
+                                question_id=f"subjective-{index + 1}",
+                                user_answer=item.original_sentence,
+                                correct_answer=item.revised_sentence,
+                                is_correct=False,
+                                explanation=item.reason_zh,
+                                skill_tag=item.skill_tag,
+                            )
+                            for index, item in enumerate(evaluation.sentence_rewrites)
+                        ],
+                        subjective_evaluation=evaluation,
+                    )
+                if result.subjective_evaluation is not None:
+                    for tag in result.subjective_evaluation.weakness_tags:
+                        wrong_skills[tag] += 1
             else:
                 result = grade_attempt(question_set, answers, section_duration_seconds)
                 for question_result in result.question_results:
@@ -170,4 +176,31 @@ class MockExamService:
         return cls.SECTION_WEIGHTS.get(
             (question_type.value, slot),
             cls.SECTION_WEIGHTS.get((question_type.value, None), 0.0),
+        )
+
+    @staticmethod
+    def _blank_subjective_result(
+        question_set,
+        duration_seconds: int,
+    ) -> AttemptResult:
+        weakness_tags = list(question_set.rubric_focus) or ["content_relevance", "coherence"]
+        evaluation = SubjectiveEvaluation(
+            score_15=0.0,
+            estimated_reported_score=0.0,
+            grade_band="未作答",
+            overall_feedback_zh="该部分未作答，已按 0 分计入整套模拟四六级考试结果。",
+            high_score_version=question_set.reference_answer,
+            weakness_tags=weakness_tags,
+        )
+        return AttemptResult(
+            id=make_id("mock_attempt"),
+            question_set_id=question_set.id,
+            correct_count=0,
+            total_count=0,
+            accuracy=0.0,
+            duration_seconds=duration_seconds,
+            summary=evaluation.overall_feedback_zh,
+            recommendations=["该部分空白，建议先完成基础内容，再回看高分范文或参考译文。"],
+            question_results=[],
+            subjective_evaluation=evaluation,
         )

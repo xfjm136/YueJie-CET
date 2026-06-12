@@ -2738,6 +2738,18 @@ impl YueJieRustApp {
         if self.mock_exam_session.is_some() {
             return self.handle_mock_exam_practice_key(key);
         }
+        match key.code {
+            KeyCode::F(8) => {
+                self.open_type_screen()?;
+                self.status_line = String::from("已返回题型选择。");
+                return Ok(());
+            }
+            KeyCode::F(9) => {
+                self.submit_practice()?;
+                return Ok(());
+            }
+            _ => {}
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
         {
@@ -2755,6 +2767,28 @@ impl YueJieRustApp {
     }
 
     fn handle_mock_exam_practice_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::F(8) => {
+                if let Some(task) = &self.mock_exam_generating_task {
+                    task.cancel_flag.store(true, Ordering::Relaxed);
+                }
+                self.mock_exam_session = None;
+                self.mock_exam_generating_task = None;
+                self.practice = None;
+                self.return_home()?;
+                self.status_line = String::from("已退出模拟四六级考试并返回首页。");
+                return Ok(());
+            }
+            KeyCode::F(9) => {
+                self.submit_current_mock_exam_section()?;
+                return Ok(());
+            }
+            KeyCode::F(10) => {
+                self.submit_mock_exam()?;
+                return Ok(());
+            }
+            _ => {}
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
         {
@@ -2790,10 +2824,6 @@ impl YueJieRustApp {
             }
             if matches!(key.code, KeyCode::F(6)) && can_switch && session.is_ready(TypeChoice::Careful2) {
                 session.switch_section(TypeChoice::Careful2);
-                return Ok(());
-            }
-            if matches!(key.code, KeyCode::F(9)) {
-                self.submit_mock_exam()?;
                 return Ok(());
             }
             if !can_switch
@@ -3894,15 +3924,19 @@ impl YueJieRustApp {
         if let Some(practice) = &mut self.practice {
             if practice.question_set.questions.is_empty()
                 && practice.response_text().trim().is_empty()
+                && !practice.submit_confirm_pending
             {
-                self.status_line = String::from("写作/翻译作答区为空，请先输入内容后再提交。");
+                practice.submit_confirm_pending = true;
+                self.status_line = String::from(
+                    "当前写作/翻译为空白；再按一次 F9 / Ctrl+S / 提交按钮，将按空白作答交卷。",
+                );
                 return Ok(());
             }
             let unanswered = practice.unanswered_count();
             if unanswered > 0 && !practice.submit_confirm_pending {
                 practice.submit_confirm_pending = true;
                 self.status_line = format!(
-                    "还有 {} 题未作答，再按一次 Ctrl+S / Enter 将按当前答案交卷。",
+                    "还有 {} 题未作答，再按一次 F9 / Ctrl+S / Enter 将按当前答案交卷。",
                     unanswered
                 );
                 return Ok(());
@@ -5089,7 +5123,7 @@ impl YueJieRustApp {
         let inner = simple_block("题型切换", palette).inner(parts[1]);
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Length(2)])
+            .constraints([Constraint::Length(3), Constraint::Length(3)])
             .split(inner);
         let row1 = Layout::default()
             .direction(Direction::Horizontal)
@@ -5118,12 +5152,14 @@ impl YueJieRustApp {
         for (type_choice, rect) in buttons {
             let ready = session.is_ready(type_choice);
             let locked = session.is_section_locked(type_choice);
-            let title = if locked {
-                format!("{} 锁定", type_choice.label())
+            let title = if session.active_section == type_choice {
+                format!("● {}", type_choice.label())
+            } else if locked {
+                format!("{} 已锁定", type_choice.label())
             } else if ready {
-                type_choice.label().to_string()
+                format!("{} 可做", type_choice.label())
             } else {
-                format!("{} 生成中", type_choice.label())
+                format!("{} 准备中", type_choice.label())
             };
             self.draw_action_button(
                 frame,
@@ -5152,7 +5188,7 @@ impl YueJieRustApp {
                 Constraint::Length(6),
                 Constraint::Length(3),
                 Constraint::Length(3),
-                Constraint::Min(3),
+                Constraint::Min(4),
             ])
             .split(area);
 
@@ -5251,9 +5287,9 @@ impl YueJieRustApp {
 
         frame.render_widget(
             Paragraph::new(if session.writing_locked {
-                "Ctrl+S 保存当前部分 | F1-F6 切换题型 | 等待页不计时"
+                "F9 保存当前部分 | F10 最终交卷 | F1-F6 切换题型 | F8 退出"
             } else {
-                "Ctrl+S 提交作文 | 作文 30 分钟后自动锁定"
+                "F9 提交作文 | Ctrl+S 同样可提交 | 作文 30 分钟后自动锁定"
             })
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
@@ -7488,9 +7524,9 @@ impl YueJieRustApp {
         );
         frame.render_widget(
             Paragraph::new(if practice.question_set.questions.is_empty() {
-                "Ctrl+S 提交 | Enter 换行 | 左右移动光标 | 上下滚动作答区 | PageUp/PageDown 滚动题面"
+                "F9 提交 | F8 返回题型 | Ctrl+S 也可提交 | Enter 换行 | 左右移动光标"
             } else {
-                "Ctrl+S 提交 | Backspace 清空当前答案 | Space/Enter 选中项 | PageUp/PageDown 滚动文章"
+                "F9 提交 | F8 返回题型 | Ctrl+S 也可提交 | Space/Enter 选中项 | PageUp/PageDown 滚动文章"
             })
             .alignment(Alignment::Center)
             .block(simple_block("", palette)),

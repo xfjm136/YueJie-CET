@@ -11,6 +11,7 @@ from app.domain.schemas import (
     AttemptQuestionResult,
     AttemptResult,
     QuestionSet,
+    SubjectiveEvaluation,
     VocabularyItem,
     make_id,
 )
@@ -42,59 +43,61 @@ class AttemptService:
         if question_set.is_subjective:
             response_text = answers.get("response_text", "").strip()
             if not response_text:
-                raise ValueError("missing response_text for subjective task")
-            if self.subjective_evaluator is None:
-                raise RuntimeError("subjective evaluator is not configured")
-            if progress_callback is not None:
-                progress_callback(
-                    "prepare",
-                    f"已读取作答内容，约 {len(response_text.split())} 词；正在整理评分维度。",
-                )
-                progress_callback("score_request", "正在向 DeepSeek 请求评分与批注。")
-            evaluation = self.subjective_evaluator.evaluate(
-                question_set=question_set,
-                response_text=response_text,
-                duration_seconds=duration_seconds,
-            )
-            if progress_callback is not None:
-                progress_callback("analysis", "评分结果已返回，正在整理错词、病句和高分版本。")
-            result = AttemptResult(
-                id=make_id("attempt"),
-                question_set_id=question_set.id,
-                correct_count=0,
-                total_count=0,
-                accuracy=round(evaluation.score_15 / 15.0, 4),
-                duration_seconds=duration_seconds,
-                summary=evaluation.overall_feedback_zh,
-                recommendations=[
-                    f"{SKILL_LABELS.get(tag, tag)}：{SKILL_ADVICE.get(tag, SKILL_ADVICE['general'])}"
-                    for tag in evaluation.weakness_tags
-                ] or ["先根据病句改写和错词纠正重写一版。"],
-                question_results=[
-                    AttemptQuestionResult(
-                        question_id=f"subjective-{index + 1}",
-                        user_answer=item.original_sentence,
-                        correct_answer=item.revised_sentence,
-                        is_correct=False,
-                        explanation=item.reason_zh,
-                        skill_tag=item.skill_tag,
+                result = self._blank_subjective_result(question_set, duration_seconds)
+                extra_vocab = []
+            else:
+                if self.subjective_evaluator is None:
+                    raise RuntimeError("subjective evaluator is not configured")
+                if progress_callback is not None:
+                    progress_callback(
+                        "prepare",
+                        f"已读取作答内容，约 {len(response_text.split())} 词；正在整理评分维度。",
                     )
-                    for index, item in enumerate(evaluation.sentence_rewrites)
-                ],
-                subjective_evaluation=evaluation,
-            )
-            extra_vocab = [
-                VocabularyItem(
-                    lemma=item.corrected.lower(),
-                    surface_form=item.corrected,
-                    level_hint=question_set.level.value,
-                    meaning_zh=item.meaning_zh,
-                    example_en=item.corrected,
-                    error_related_score=1,
+                    progress_callback("score_request", "正在向 DeepSeek 请求评分与批注。")
+                evaluation = self.subjective_evaluator.evaluate(
+                    question_set=question_set,
+                    response_text=response_text,
+                    duration_seconds=duration_seconds,
                 )
-                for item in evaluation.wrong_words
-                if item.corrected.strip()
-            ]
+                if progress_callback is not None:
+                    progress_callback("analysis", "评分结果已返回，正在整理错词、病句和高分版本。")
+                result = AttemptResult(
+                    id=make_id("attempt"),
+                    question_set_id=question_set.id,
+                    correct_count=0,
+                    total_count=0,
+                    accuracy=round(evaluation.score_15 / 15.0, 4),
+                    duration_seconds=duration_seconds,
+                    summary=evaluation.overall_feedback_zh,
+                    recommendations=[
+                        f"{SKILL_LABELS.get(tag, tag)}：{SKILL_ADVICE.get(tag, SKILL_ADVICE['general'])}"
+                        for tag in evaluation.weakness_tags
+                    ] or ["先根据病句改写和错词纠正重写一版。"],
+                    question_results=[
+                        AttemptQuestionResult(
+                            question_id=f"subjective-{index + 1}",
+                            user_answer=item.original_sentence,
+                            correct_answer=item.revised_sentence,
+                            is_correct=False,
+                            explanation=item.reason_zh,
+                            skill_tag=item.skill_tag,
+                        )
+                        for index, item in enumerate(evaluation.sentence_rewrites)
+                    ],
+                    subjective_evaluation=evaluation,
+                )
+                extra_vocab = [
+                    VocabularyItem(
+                        lemma=item.corrected.lower(),
+                        surface_form=item.corrected,
+                        level_hint=question_set.level.value,
+                        meaning_zh=item.meaning_zh,
+                        example_en=item.corrected,
+                        error_related_score=1,
+                    )
+                    for item in evaluation.wrong_words
+                    if item.corrected.strip()
+                ]
         else:
             if progress_callback is not None:
                 progress_callback("grade", "正在判分并整理客观题结果。")
@@ -108,6 +111,33 @@ class AttemptService:
             self.db.upsert_vocabulary_items(extra_vocab)
         self.weakness_service.refresh_snapshot(question_set.level, question_set.question_type)
         return result
+
+    @staticmethod
+    def _blank_subjective_result(
+        question_set: QuestionSet,
+        duration_seconds: int,
+    ) -> AttemptResult:
+        weakness_tags = list(question_set.rubric_focus) or ["content_relevance", "coherence"]
+        evaluation = SubjectiveEvaluation(
+            score_15=0.0,
+            estimated_reported_score=0.0,
+            grade_band="未作答",
+            overall_feedback_zh="该部分未作答，已按 0 分计入本次结果。",
+            high_score_version=question_set.reference_answer,
+            weakness_tags=weakness_tags,
+        )
+        return AttemptResult(
+            id=make_id("attempt"),
+            question_set_id=question_set.id,
+            correct_count=0,
+            total_count=0,
+            accuracy=0.0,
+            duration_seconds=duration_seconds,
+            summary=evaluation.overall_feedback_zh,
+            recommendations=["该部分为空白，建议至少先完成基础内容，再参考范文或译文重写一版。"],
+            question_results=[],
+            subjective_evaluation=evaluation,
+        )
 
     def delete_attempt_history(self, attempt_id: str) -> dict[str, str | bool]:
         deleted = self.db.delete_attempt_history(attempt_id)
