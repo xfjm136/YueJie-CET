@@ -480,7 +480,7 @@ class ValidationTests(unittest.TestCase):
         payload = {
             "title": "Writing Task",
             "topic": "independent thinking",
-            "task_prompt": "For this part, you are allowed 30 minutes to write an essay of no less than 120 words according to the outline given below.",
+            "task_prompt": "Directions:",
             "reference_answer": "Independent thinking remains essential in modern learning. Although digital tools can save time and improve access to information, students still need to judge evidence, organize ideas, and form their own conclusions. In classroom practice, learners benefit most when they use technology as support rather than as a substitute for reflection. For example, an online summary may help a student review faster, but deep understanding still requires careful reading, note-taking, and personal reflection on evidence. Universities should therefore teach students how to work with new tools while preserving habits of questioning, comparison, and self-correction. In this way, technology can increase efficiency without weakening the human ability to think clearly, argue responsibly, and learn for the long term. It also helps students remain confident when they face new information and unfamiliar opinions.",
             "rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"],
             "min_response_words": 120,
@@ -509,6 +509,40 @@ class ValidationTests(unittest.TestCase):
         validated = self.validator.validate(payload, Level.CET4, QuestionType.WRITING, None)
         self.assertEqual(validated["questions"], [])
         self.assertGreaterEqual(validated["word_count"], 120)
+
+    def test_cet6_writing_prompt_requires_real_sentence_led_pattern(self) -> None:
+        payload = {
+            "title": "Writing Task",
+            "topic": "self-worth",
+            "task_prompt": "Directions:",
+            "reference_answer": "While striving for long-term goals, young people need both opportunity and responsibility. Modern society offers students more channels for learning, communication, and self-development than ever before. At the same time, these chances become meaningful only when they are matched by persistence, judgment, and a clear sense of purpose. In my view, self-worth is not proved by quick success alone but by the ability to keep learning, contribute to others, and remain confident in the face of setbacks. For example, a student may begin by joining a volunteer program, a research project, or an internship. Through such experiences, he or she can better understand personal strengths while also serving real social needs. They also learn that personal growth is closely connected with patience, service, and the willingness to shoulder responsibility in everyday life. In this way, opportunity and self-worth can support each other and lead to fuller personal growth.",
+            "rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"],
+            "min_response_words": 150,
+            "max_response_words": 200,
+            "shared_options": [],
+            "passage": {
+                "title": "Writing Task",
+                "paragraphs": [
+                    "For this part, you are allowed 30 minutes to write an essay that begins with the sentence \"While striving for the Chinese Dream, young people enjoy more opportunities to realize their self-worth.\" You can make comments, cite examples or use your personal experiences to develop your essay. You should write at least 150 words but no more than 200 words. You should copy the sentence given in quotes at the beginning of your essay."
+                ],
+            },
+            "questions": [],
+            "answer_key": [],
+            "analysis": {
+                "overall_strategy": "先理解句首引导句，再组织论证。",
+                "overall_summary": "六级写作应紧扣句首命题并展开论证。",
+                "item_explanations": [],
+                "test_tips": ["先定立场", "再举例", "最后检查语言"],
+            },
+            "vocabulary": [
+                {"lemma": "opportunity", "surface_form": "opportunity", "level_hint": "cet6", "meaning_zh": "机会", "example_en": "Young people should make good use of every opportunity."},
+                {"lemma": "self-worth", "surface_form": "self-worth", "level_hint": "cet6", "meaning_zh": "自我价值", "example_en": "Real achievement helps people build self-worth."},
+                {"lemma": "persistence", "surface_form": "persistence", "level_hint": "cet6", "meaning_zh": "坚持", "example_en": "Persistence matters as much as talent in personal development."},
+            ],
+        }
+        validated = self.validator.validate(payload, Level.CET6, QuestionType.WRITING, None)
+        self.assertEqual(validated["questions"], [])
+        self.assertGreaterEqual(validated["word_count"], 150)
 
     def test_translation_payload_passes_validation(self) -> None:
         payload = {

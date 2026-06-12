@@ -479,8 +479,16 @@ impl TypeChoice {
             Self::BankedCloze => "Section A",
             Self::LongReading => "Section B",
             Self::Careful1 => "Section C",
-            Self::Careful2 => "Section D",
+            Self::Careful2 => "Section C",
             Self::Translation => "Part IV",
+        }
+    }
+
+    fn passage_label(self) -> Option<&'static str> {
+        match self {
+            Self::Careful1 => Some("Passage One"),
+            Self::Careful2 => Some("Passage Two"),
+            _ => None,
         }
     }
 
@@ -2840,8 +2848,11 @@ impl YueJieRustApp {
             stat_chunks[1],
             palette,
             "表现指数",
-            &format!("{:.1}", recent_performance_percent),
-            &format!("原始正确率 {:.1}%", raw_recent_accuracy_percent),
+            &format!("{:.1}%", recent_performance_percent),
+            &format!(
+                "原始正确率 {:.1}% · 已按题型难度归一",
+                raw_recent_accuracy_percent
+            ),
             Some(recent_performance_ratio),
         );
         self.draw_metric_box(
@@ -2849,8 +2860,8 @@ impl YueJieRustApp {
             stat_chunks[2],
             palette,
             "节奏匹配",
-            &format!("{:.1}", recent_pace_percent),
-            &format!("原始均时 {}", raw_recent_duration_text),
+            &format!("{:.1}%", recent_pace_percent),
+            &format!("原始均时 {} · 已按题型用时归一", raw_recent_duration_text),
             Some(recent_pace_ratio),
         );
         self.draw_metric_box(
@@ -2891,7 +2902,7 @@ impl YueJieRustApp {
             &performance_series,
             palette.success,
             TrendMetric::Index,
-            Some(130.0),
+            Some(100.0),
         );
         self.draw_line_trend_card(
             frame,
@@ -3140,9 +3151,13 @@ impl YueJieRustApp {
             )),
             Line::from(Span::styled(
                 format!(
-                    "{} · {} · {} · {} · 已等待 {}",
+                    "{} · {}{} · {} · {} · 已等待 {}",
                     self.selected_level.label(),
                     self.selected_type.section_label(),
+                    self.selected_type
+                        .passage_label()
+                        .map(|label| format!(" · {}", label))
+                        .unwrap_or_default(),
                     self.selected_type.label(),
                     self.selected_type
                         .estimated_generation_time(self.selected_level),
@@ -3559,20 +3574,49 @@ impl YueJieRustApp {
         practice: &PracticeState,
     ) {
         let total_items = practice.question_set.questions.len().max(1);
+        let hide_topic_in_practice = practice.question_set.question_type == "careful_reading";
         let parts = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
             .split(area);
+        let meta_line = if hide_topic_in_practice {
+            format!(
+                "建议用时：{} | 题目数：{} | 主题将在复盘中查看",
+                recommended_time_text(&practice.question_set.question_type),
+                if practice.question_set.questions.is_empty() {
+                    1
+                } else {
+                    practice.question_set.questions.len()
+                }
+            )
+        } else {
+            format!(
+                "主题：{} | 建议用时：{} | 题目数：{}",
+                practice.question_set.topic,
+                recommended_time_text(&practice.question_set.question_type),
+                if practice.question_set.questions.is_empty() {
+                    1
+                } else {
+                    practice.question_set.questions.len()
+                }
+            )
+        };
         frame.render_widget(
             Paragraph::new(Text::from(vec![
                 Line::from(Span::styled(
                     format!(
-                        "{} · {} · {}",
+                        "{} · {}{} · {}",
                         format_level_label(&practice.question_set.level),
                         format_question_group_label(
                             &practice.question_set.question_type,
                             practice.question_set.slot,
                         ),
+                        format_passage_slot_label(
+                            &practice.question_set.question_type,
+                            practice.question_set.slot,
+                        )
+                        .map(|label| format!(" · {}", label))
+                        .unwrap_or_default(),
                         format_question_label(
                             &practice.question_set.question_type,
                             practice.question_set.slot,
@@ -3580,16 +3624,7 @@ impl YueJieRustApp {
                     ),
                     title_style(palette),
                 )),
-                Line::from(format!(
-                    "主题：{} | 建议用时：{} | 题目数：{}",
-                    practice.question_set.topic,
-                    recommended_time_text(&practice.question_set.question_type),
-                    if practice.question_set.questions.is_empty() {
-                        1
-                    } else {
-                        practice.question_set.questions.len()
-                    }
-                )),
+                Line::from(meta_line),
                 Line::from(if practice.submit_confirm_pending {
                     "当前仍有未作答题目，再次提交将按现有答案交卷。".to_string()
                 } else {
@@ -3676,12 +3711,18 @@ impl YueJieRustApp {
                 Line::from(Span::styled("本次作答已完成", title_style(palette))),
                 Line::from(Span::styled(
                     format!(
-                        "{} · {} · {}",
+                        "{} · {}{} · {}",
                         format_level_label(&practice.question_set.level),
                         format_question_label(
                             &practice.question_set.question_type,
                             practice.question_set.slot
                         ),
+                        format_passage_slot_label(
+                            &practice.question_set.question_type,
+                            practice.question_set.slot,
+                        )
+                        .map(|label| format!(" · {}", label))
+                        .unwrap_or_default(),
                         if let Some(evaluation) = &subjective {
                             evaluation.grade_band.clone()
                         } else {
@@ -4168,8 +4209,14 @@ impl YueJieRustApp {
                 title_style(palette),
             )),
             Line::from(format!(
-                "{} · {} · {}",
+                "{}{} · {} · {}",
                 format_question_label(&bundle.question_set.question_type, bundle.question_set.slot),
+                format_passage_slot_label(
+                    &bundle.question_set.question_type,
+                    bundle.question_set.slot,
+                )
+                .map(|label| format!(" · {}", label))
+                .unwrap_or_default(),
                 review_headline,
                 seconds_to_text(bundle.result.duration_seconds)
             )),
@@ -5096,6 +5143,7 @@ impl YueJieRustApp {
         palette: Palette,
         practice: &PracticeState,
     ) {
+        let hide_title_in_practice = practice.question_set.question_type == "careful_reading";
         let mut lines = vec![
             Line::from(Span::styled(
                 "Part III  Reading Comprehension",
@@ -5123,12 +5171,17 @@ impl YueJieRustApp {
                 format_directions(&practice.question_set.question_type),
                 Style::default().fg(palette.muted),
             )),
-            Line::from(Span::styled(
-                practice.question_set.passage.title.clone(),
-                Style::default().fg(palette.text),
-            )),
             Line::from(""),
         ];
+        if !hide_title_in_practice && !practice.question_set.passage.title.trim().is_empty() {
+            lines.insert(
+                3,
+                Line::from(Span::styled(
+                    practice.question_set.passage.title.clone(),
+                    Style::default().fg(palette.text),
+                )),
+            );
+        }
         for paragraph in &practice.question_set.passage.paragraphs {
             lines.push(Line::from(paragraph.clone()));
             lines.push(Line::from(""));
@@ -5924,8 +5977,12 @@ impl YueJieRustApp {
             .split(inner);
         frame.render_widget(
             Paragraph::new(format!(
-                "{}  {}",
+                "{}{}  {}",
                 action_type.section_label(),
+                action_type
+                    .passage_label()
+                    .map(|label| format!(" · {}", label))
+                    .unwrap_or_default(),
                 action_type.recommended_time()
             ))
             .alignment(Alignment::Center)
@@ -6591,10 +6648,18 @@ fn format_question_group_label(question_type: &str, slot: Option<i32>) -> String
         ("banked_cloze", _) => "Section A".to_string(),
         ("long_reading", _) => "Section B".to_string(),
         ("careful_reading", Some(1)) => "Section C".to_string(),
-        ("careful_reading", Some(2)) => "Section D".to_string(),
+        ("careful_reading", Some(2)) => "Section C".to_string(),
         ("careful_reading", _) => "Section C".to_string(),
         ("translation", _) => "Part IV".to_string(),
         _ => "Reading Set".to_string(),
+    }
+}
+
+fn format_passage_slot_label(question_type: &str, slot: Option<i32>) -> Option<&'static str> {
+    match (question_type, slot) {
+        ("careful_reading", Some(1)) => Some("Passage One"),
+        ("careful_reading", Some(2)) => Some("Passage Two"),
+        _ => None,
     }
 }
 
@@ -6604,13 +6669,13 @@ fn format_directions(question_type: &str) -> &'static str {
             "Directions: For this part, you are allowed 30 minutes to write an essay according to the task given below."
         }
         "banked_cloze" => {
-            "Directions: In this section, there is a passage with ten blanks. Choose one word for each blank from the fifteen choices in the answer bank."
+            "Directions: In this section, there is a passage with ten blanks. You are required to select one word for each blank from a list of choices given in a word bank following the passage. Read the passage through carefully before making your choices."
         }
         "long_reading" => {
-            "Directions: In this section, you will read a long passage with paragraphs labeled A to K. Match each statement with the paragraph from which the information is derived."
+            "Directions: In this section, you are going to read a passage with ten statements attached to it. Each statement contains information given in one of the paragraphs. Identify the paragraph from which the information is derived. You may choose a paragraph more than once."
         }
         "careful_reading" => {
-            "Directions: Read the passage carefully and choose the best answer to each question or unfinished statement according to the information given in the passage."
+            "Directions: There are 2 passages in this section. Each passage is followed by some questions or unfinished statements. For each of them there are four choices marked A, B, C and D. You should decide on the best choice."
         }
         "translation" => {
             "Directions: For this part, you are allowed 30 minutes to translate the following Chinese passage into English."
@@ -7178,7 +7243,7 @@ mod tests {
         );
         assert_eq!(
             format_question_group_label("careful_reading", Some(2)),
-            "Section D"
+            "Section C"
         );
     }
 
@@ -7215,8 +7280,8 @@ mod tests {
     #[test]
     fn directions_cover_exam_instructions() {
         assert!(format_directions("banked_cloze").contains("ten blanks"));
-        assert!(format_directions("long_reading").contains("Match each statement"));
-        assert!(format_directions("careful_reading").contains("choose the best answer"));
+        assert!(format_directions("long_reading").contains("ten statements attached"));
+        assert!(format_directions("careful_reading").contains("questions or unfinished statements"));
     }
 
     #[test]

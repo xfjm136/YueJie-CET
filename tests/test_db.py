@@ -177,6 +177,8 @@ class DatabaseTests(unittest.TestCase):
             self.assertIn("recent_pace_percent", overview)
             self.assertEqual(len(overview["recent_performance_series"]), 2)
             self.assertEqual(len(overview["recent_pace_series"]), 2)
+            self.assertLessEqual(overview["recent_performance_percent"], 100.0)
+            self.assertLessEqual(max(overview["recent_performance_series"]), 100.0)
             self.assertLessEqual(max(overview["recent_pace_series"]), 100.0)
             self.assertNotEqual(overview["recent_pace_series"][0], overview["recent_duration_series"][0])
 

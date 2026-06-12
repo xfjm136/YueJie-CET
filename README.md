@@ -179,7 +179,7 @@ Python bridge.py / services
 - 前端：Rust + `ratatui` + `crossterm`
 - AI / 业务层：Python 3.12+
 - 数据存储：SQLite
-- 模型：DeepSeek（默认 `deepseek-v4-pro`，可配置）
+- 模型：DeepSeek（默认 `deepseek-v4-flash`，可配置）
 
 ## 快速开始
 
@@ -207,7 +207,7 @@ cargo build --release
 ```dotenv
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_MODEL=deepseek-v4-flash
 YUEJIE_DB_PATH=
 YUEJIE_REQUEST_TIMEOUT=120
 ```
@@ -234,7 +234,7 @@ yuejie-cet
 | --- | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | 是 | 空 | 未配置时拒绝真实 AI 出题与评阅 |
 | `DEEPSEEK_BASE_URL` | 否 | `https://api.deepseek.com` | DeepSeek API 地址 |
-| `DEEPSEEK_MODEL` | 否 | `deepseek-v4-pro` | 可自行切换到其他 DeepSeek 模型 |
+| `DEEPSEEK_MODEL` | 否 | `deepseek-v4-flash` | 可自行切换到其他 DeepSeek 模型 |
 | `YUEJIE_DB_PATH` | 否 | `data/yuejie.db` | SQLite 数据库路径 |
 | `YUEJIE_REQUEST_TIMEOUT` | 否 | `120` | API 超时秒数 |
 

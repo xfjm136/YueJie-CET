@@ -85,14 +85,14 @@ class HomeScreen(BaseScreen):
             Static(APP_SUBTITLE, classes="screen-subtitle hero-subtitle"),
             Horizontal(
                 self._metric_card("总刷题数", "card-total", Digits("0000", id="home-total-digits")),
-                self._metric_card("最近正确率", "card-accuracy", Digits("00.0", id="home-accuracy-digits")),
-                self._metric_card("平均用时", "card-duration", Digits("00:00", id="home-duration-digits")),
+                self._metric_card("表现指数", "card-accuracy", Digits("000.0", id="home-accuracy-digits")),
+                self._metric_card("节奏匹配", "card-duration", Digits("000.0", id="home-duration-digits")),
                 self._distribution_card(),
                 id="home-top-cards",
             ),
             Horizontal(
-                self._chart_card("最近 5 次正确率走势", "home-accuracy-spark", "home-accuracy-caption"),
-                self._chart_card("最近 5 次用时走势", "home-duration-spark", "home-duration-caption"),
+                self._chart_card("最近 5 次表现指数走势", "home-accuracy-spark", "home-accuracy-caption"),
+                self._chart_card("最近 5 次节奏匹配走势", "home-duration-spark", "home-duration-caption"),
                 id="home-chart-row",
             ),
             Horizontal(
@@ -146,18 +146,20 @@ class HomeScreen(BaseScreen):
             digits_number(overview["total_attempts"], width=4)
         )
         self.query_one("#home-accuracy-digits", Digits).update(
-            digits_number(overview["recent_accuracy_percent"], width=4, decimals=1)
+            digits_number(overview["recent_performance_percent"], width=4, decimals=1)
         )
-        self.query_one("#home-duration-digits", Digits).update(overview["recent_duration_text"])
+        self.query_one("#home-duration-digits", Digits).update(
+            digits_number(overview["recent_pace_percent"], width=4, decimals=1)
+        )
 
         self.query_one("#total-meta", Static).update(
             f"四级 {overview['total_cet4']} 题 / 六级 {overview['total_cet6']} 题"
         )
         self.query_one("#accuracy-meta", Static).update(
-            f"最近 5 次平均正确率 {overview['recent_accuracy_percent']:.1f}%"
+            f"原始正确率 {overview['raw_recent_accuracy_percent']:.1f}%"
         )
         self.query_one("#duration-meta", Static).update(
-            f"最近 5 次平均用时 {overview['recent_duration_text']}"
+            f"原始均时 {overview['raw_recent_duration_text']}"
         )
         self.query_one("#distribution-common", Static).update(
             f"当前最常练：{overview['most_common_type_label']}"
@@ -170,10 +172,11 @@ class HomeScreen(BaseScreen):
             progress=min(overview["total_attempts"], 100)
         )
         self.query_one("#accuracy-bar", ProgressBar).update(
-            progress=overview["recent_accuracy_percent"]
+            progress=overview["recent_performance_percent"]
         )
-        duration_progress = min(overview["recent_duration_seconds"], 40 * 60)
-        self.query_one("#duration-bar", ProgressBar).update(progress=duration_progress, total=40 * 60)
+        self.query_one("#duration-bar", ProgressBar).update(
+            progress=overview["recent_pace_percent"]
+        )
         self.query_one("#distribution-cet4-bar", ProgressBar).update(
             progress=overview["cet4_ratio"] * 100
         )
@@ -182,16 +185,16 @@ class HomeScreen(BaseScreen):
         )
 
         self.query_one("#home-accuracy-spark", Sparkline).data = safe_series(
-            overview["recent_accuracy_series"]
+            overview["recent_performance_series"]
         )
         self.query_one("#home-duration-spark", Sparkline).data = safe_series(
-            overview["recent_duration_series"]
+            overview["recent_pace_series"]
         )
         self.query_one("#home-accuracy-caption", Static).update(
-            "越靠右越新，峰值越高表示最近更稳。"
+            "按题型难度归一后比较，100 表示已达到或超过该题型常规表现线。"
         )
         self.query_one("#home-duration-caption", Static).update(
-            "越靠低越省时，目标是稳定而不是盲目求快。"
+            "按题型推荐用时归一后比较，越接近 100 表示节奏越合适。"
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

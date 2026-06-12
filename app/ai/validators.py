@@ -607,68 +607,61 @@ class CETQuestionValidator:
         prompts = [str(item.get("prompt", "")).strip().lower() for item in payload.get("questions", [])]
         if not prompts:
             return
-        if level is Level.CET4 and slot == 1:
-            markers = ("study", "experiment", "research", "researcher", "participants", "finding", "result")
-            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
-                errors.append("仔细阅读 1（CET4）题干应更贴近研究/实验/结果型问法")
-            families = (
-                "purpose",
-                "find",
-                "result",
+        common_real_paper_families = (
+            "what do we learn from the passage",
+            "what do we learn about",
+            "what does the author say",
+            "what does the passage say",
+            "according to the passage",
+            "what can be inferred",
+            "what can we infer",
+            "what can we conclude",
+            "what does the author think",
+            "what does the passage imply",
+            "why does the author",
+            "why did",
+            "what does the author suggest",
+            "what often happens when",
+            "what is one of the reasons for",
+            "what is the general trend in",
+            "what is the finding of",
+            "what is the problem with",
+            "what is important to",
+            "what can we expect of",
+        )
+        if sum(any(marker in prompt for marker in common_real_paper_families) for prompt in prompts) < 2:
+            errors.append("仔细阅读题干应更贴近真题常见问法，如 what do we learn / what does the passage say / what can we conclude / why does the author mention")
+
+        if slot == 1:
+            fact_led_families = (
+                "what do we learn from the passage",
+                "what do we learn about",
+                "what does the author say",
+                "what does the passage say",
                 "according to the study",
-                "researchers",
-                "participants",
-                "experiment",
+                "the author mentions",
+                "what is one of the reasons for",
+                "what is the general trend in",
+                "what can we conclude",
+                "what is the finding of",
+                "what often happens when",
             )
-            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
-                errors.append("仔细阅读 1（CET4）至少应有 2 道更像实验目的、过程或研究发现的题干")
-        elif level is Level.CET4 and slot == 2:
-            markers = ("trend", "reason", "reaction", "suggest", "attitude", "consumer")
-            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
-                errors.append("仔细阅读 2（CET4）题干应更贴近趋势/原因/态度/建议型问法")
-            families = (
-                "contributes to",
-                "reason",
-                "react",
-                "suggest",
-                "attitude",
-                "young people",
-                "consumers",
-                "why does the author mention",
-            )
-            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
-                errors.append("仔细阅读 2（CET4）至少应有 2 道更像原因、反应、建议或态度的题干")
-        elif level is Level.CET6 and slot == 1:
-            markers = ("motive", "consequence", "strategy", "expansion", "comparison", "report")
-            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
-                errors.append("仔细阅读 1（CET6）题干应更贴近商业/策略/后果/报告型问法")
-            families = (
-                "motive",
-                "consequence",
-                "strategy",
-                "according to the report",
-                "comparison",
-                "superior to",
-                "market",
-            )
-            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
-                errors.append("仔细阅读 1（CET6）至少应有 2 道更像动机、后果、比较或报告发现的题干")
-        elif level is Level.CET6 and slot == 2:
-            markers = ("infer", "imply", "cite", "attitude", "stance", "critical", "skeptical")
-            if not any(any(marker in prompt for marker in markers) for prompt in prompts):
-                errors.append("仔细阅读 2（CET6）题干应更贴近推断/例证目的/态度型问法")
-            families = (
-                "infer",
-                "imply",
-                "cite",
-                "attitude",
-                "stance",
-                "skeptical",
-                "critical",
+            if not any(any(marker in prompt for marker in fact_led_families) for prompt in prompts):
+                errors.append("仔细阅读 1 题干应更贴近真题中较常见的事实型、说明型问法")
+        elif slot == 2:
+            interpretive_families = (
+                "what can be inferred",
+                "what can we infer",
+                "what can we conclude",
+                "what does the author think",
+                "what does the passage say",
                 "why does the author",
+                "why did",
+                "what can we expect of",
+                "what is important to",
             )
-            if sum(any(marker in prompt for marker in families) for prompt in prompts) < 2:
-                errors.append("仔细阅读 2（CET6）至少应有 2 道更像推断、例证目的或态度判断的题干")
+            if not any(any(marker in prompt for marker in interpretive_families) for prompt in prompts):
+                errors.append("仔细阅读 2 题干应更贴近真题中较常见的推断、例证作用或态度型问法")
 
     def _validate_long_reading_statement_style(
         self,
@@ -717,6 +710,18 @@ class CETQuestionValidator:
             errors.append("写作题题面应保持为简短的 1-3 段英文提示")
         if any(re.match(r"^\s*\d+\s*[\.\):\-]", line) for line in prompt_lines):
             errors.append("写作题题面不应使用 1./2./3. 这类详细编号式提示")
+        if level is Level.CET4:
+            if "suppose" not in combined_prompt or "you are now to write" not in combined_prompt:
+                errors.append("四级写作题面应更贴近真题常见的 Suppose ... You are now to write ... 单段式格式")
+            if "begins with the sentence" in combined_prompt:
+                errors.append("四级写作题面不应误用六级的 begins with the sentence 模板")
+        else:
+            if "begins with the sentence" not in combined_prompt:
+                errors.append("六级写作题面应更贴近真题常见的 begins with the sentence 模板")
+            if "you can make comments, cite examples or use your personal experiences to develop your essay" not in combined_prompt:
+                errors.append("六级写作题面应包含 make comments / cite examples / personal experiences 这类官方指导语")
+            if "you should copy the sentence given in quotes" not in combined_prompt:
+                errors.append("六级写作题面应包含 copy the sentence given in quotes 的官方要求")
 
     def _validate_translation_source_style(
         self,

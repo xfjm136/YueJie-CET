@@ -33,6 +33,7 @@ class DeepSeekClient:
         *,
         max_tokens: int | None = None,
         disable_thinking: bool = True,
+        request_timeout: float | None = None,
     ) -> dict[str, Any]:
         import httpx
 
@@ -60,7 +61,7 @@ class DeepSeekClient:
                         "Content-Type": "application/json",
                     },
                     json=request_payload,
-                    timeout=self.timeout,
+                    timeout=request_timeout or self.timeout,
                     trust_env=False,
                 )
                 response.raise_for_status()
@@ -100,6 +101,7 @@ class DeepSeekClient:
         max_tokens: int | None = None,
         disable_thinking: bool = True,
         allow_fallback_json_mode: bool = True,
+        request_timeout: float | None = None,
     ) -> dict[str, Any]:
         import httpx
 
@@ -135,7 +137,7 @@ class DeepSeekClient:
             payload = self._post_chat_completion(
                 strict_base_url,
                 request_payload,
-                timeout=self.timeout,
+                timeout=request_timeout or self.timeout,
             )
             return self._extract_tool_call_json(payload, tool_name)
         except Exception:
@@ -147,6 +149,7 @@ class DeepSeekClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 disable_thinking=disable_thinking,
+                request_timeout=request_timeout,
             )
 
     def _post_chat_completion(

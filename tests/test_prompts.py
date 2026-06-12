@@ -6,7 +6,7 @@ from app.domain.enums import Level, QuestionType
 
 class PromptTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.pipeline = QuestionGenerationPipeline(client=None, default_model="deepseek-v4-pro")
+        self.pipeline = QuestionGenerationPipeline(client=None, default_model="deepseek-v4-flash")
 
     def test_generate_requires_real_client_instead_of_silent_mock(self) -> None:
         with self.assertRaises(RuntimeError):
@@ -46,7 +46,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn("5 four-option multiple-choice questions", prompt)
         self.assertIn("Ensure every answer is uniquely supported", prompt)
         self.assertIn("Use concise Chinese explanations", prompt)
-        self.assertIn('"options": ["A. ...", "B. ...", "C. ...", "D. ..."]', prompt)
+        self.assertIn("Structured output contract", prompt)
+        self.assertIn("objective sets", prompt)
         self.assertIn("All of the above", prompt)
 
     def test_careful_reading_spec_mentions_core_question_types(self) -> None:
@@ -55,7 +56,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("exactly 5 four-option multiple-choice questions", spec)
         self.assertIn("Question stems may be either direct questions or unfinished statements", spec)
         self.assertIn("do not force exactly one of each", spec)
-        self.assertIn("psychology, ethics, technology-reflection", spec)
+        self.assertIn("social issues, ethics, psychology, technology", spec)
 
     def test_writing_spec_mentions_minimum_words(self) -> None:
         spec = self.pipeline._question_spec(Level.CET4, QuestionType.WRITING, None)
@@ -86,8 +87,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn("10 statements for paragraph matching", prompt)
         self.assertIn("statements must be paraphrases", prompt)
         self.assertIn("Paragraphs must be labeled", prompt)
-        self.assertIn('"shared_options": []', prompt)
-        self.assertIn('"prompt": "English statement to match"', prompt)
+        self.assertIn("rubric_focus must be an empty array", prompt)
+        self.assertIn("10 English statements for matching", prompt)
         self.assertIn("statement rather than a question", prompt)
 
     def test_generation_prompt_mentions_cet_source_style_and_background_limits(self) -> None:
@@ -109,7 +110,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("source materials", prompt)
         self.assertIn("Background knowledge must be common or recoverable", prompt)
         self.assertIn("Do not write in a dramatic, fictional, or conversational blog style", prompt)
-        self.assertIn('"prompt": "Blank 1"', prompt)
+        self.assertIn("task_prompt and reference_answer must be empty strings", prompt)
         self.assertIn("one English word", prompt)
         self.assertIn("Do not place Chinese characters", prompt)
 
@@ -122,9 +123,9 @@ class PromptTests(unittest.TestCase):
         )
         self.assertEqual(blueprint["target_word_count"], 425)
         self.assertEqual(blueprint["vocabulary_target_count"], 5)
-        self.assertTrue(any("inference" in item for item in blueprint["skill_focus"]))
+        self.assertTrue(any("infer" in item.lower() or "implied" in item.lower() for item in blueprint["skill_focus"]))
         self.assertIn("推理判断不稳定", blueprint["weakness_focus"])
-        self.assertIn("technology-reflection", blueprint["exam_profile"])
+        self.assertIn("Section C Passage Two", blueprint["exam_profile"])
         self.assertTrue(blueprint["prompt_style_anchors"])
         self.assertTrue(blueprint["authenticity_guardrails"])
 
@@ -153,18 +154,18 @@ class PromptTests(unittest.TestCase):
             2,
             None,
         )
-        self.assertIn("research-style", cet4_slot1["register"])
-        self.assertIn("consumer commentary", cet4_slot2["register"])
-        self.assertIn("business", cet6_slot1["register"])
-        self.assertIn("reflective or critical", cet6_slot2["register"])
+        self.assertIn("explanatory", cet4_slot1["register"])
+        self.assertIn("interpretive", cet4_slot2["register"])
+        self.assertIn("analytical", cet6_slot1["register"])
+        self.assertIn("analytical or reflective", cet6_slot2["register"])
         self.assertIn("original English materials", cet4_slot1["source_material_hint"])
-        self.assertIn("opinion piece", cet6_slot2["source_material_hint"])
-        self.assertIn("research", cet4_slot1["exam_profile"])
-        self.assertIn("social", cet4_slot2["exam_profile"])
-        self.assertIn("market", cet6_slot1["exam_profile"])
-        self.assertIn("psychology", cet6_slot2["exam_profile"])
-        self.assertTrue(any("purpose" in item.lower() or "study" in item.lower() for item in cet4_slot1["prompt_style_anchors"]))
-        self.assertTrue(any("attitude" in item.lower() or "infer" in item.lower() for item in cet6_slot2["prompt_style_anchors"]))
+        self.assertIn("reflective passage", cet6_slot2["source_material_hint"])
+        self.assertIn("Section C Passage One", cet4_slot1["exam_profile"])
+        self.assertIn("Section C Passage Two", cet4_slot2["exam_profile"])
+        self.assertIn("Section C Passage One", cet6_slot1["exam_profile"])
+        self.assertIn("Section C Passage Two", cet6_slot2["exam_profile"])
+        self.assertTrue(any("what do we learn" in item.lower() or "what does the author say" in item.lower() for item in cet4_slot1["prompt_style_anchors"]))
+        self.assertTrue(any("attitude" in item.lower() or "why does the author" in item.lower() for item in cet6_slot2["prompt_style_anchors"]))
 
     def test_blueprint_avoids_recent_topic_keyword_repetition(self) -> None:
         blueprint = self.pipeline._build_blueprint(
@@ -202,6 +203,13 @@ class PromptTests(unittest.TestCase):
         self.assertIn("official exam instructions", writing["writing_mode"])
         self.assertIn("Chinese culture", translation["translation_domain"])
 
+    def test_writing_prompt_examples_follow_recent_real_paper_shapes(self) -> None:
+        cet4_examples = self.pipeline._writing_prompt_examples(Level.CET4, QuestionType.WRITING)
+        cet6_examples = self.pipeline._writing_prompt_examples(Level.CET6, QuestionType.WRITING)
+        self.assertTrue(all("Suppose" in item and "You are now to write" in item for item in cet4_examples))
+        self.assertTrue(all("begins with the sentence" in item for item in cet6_examples))
+        self.assertTrue(all("You should copy the sentence given in quotes" in item for item in cet6_examples))
+
     def test_generation_prompt_mentions_exam_profile_and_novelty_rules(self) -> None:
         prompt = self.pipeline._generation_user_prompt(
             Level.CET6,
@@ -237,6 +245,15 @@ class PromptTests(unittest.TestCase):
         self.assertIn("blueprint.exam_profile", prompt)
         self.assertIn("prompt_style_anchors", prompt)
         self.assertIn("Novelty rule", prompt)
+
+    def test_objective_schema_zeros_subjective_fields(self) -> None:
+        schema = self.pipeline._tool_parameters_schema(Level.CET4, QuestionType.BANKED_CLOZE)
+        props = schema["properties"]
+        self.assertEqual(props["task_prompt"]["enum"], [""])
+        self.assertEqual(props["reference_answer"]["enum"], [""])
+        self.assertEqual(props["rubric_focus"]["maxItems"], 0)
+        self.assertEqual(props["min_response_words"]["enum"], [0])
+        self.assertEqual(props["max_response_words"]["enum"], [0])
 
     def test_postprocess_normalizes_careful_reading_options_and_skill_tags(self) -> None:
         payload = {
@@ -322,6 +339,64 @@ class PromptTests(unittest.TestCase):
         )
         self.assertEqual(len(normalized["passage"]["paragraphs"]), 1)
         self.assertFalse(normalized["passage"]["paragraphs"][0].startswith("1."))
+
+    def test_postprocess_deduplicates_cet4_time_sentence(self) -> None:
+        payload = {
+            "title": "Demo Writing",
+            "topic": "academic writing",
+            "task_prompt": "Directions:",
+            "reference_answer": "This is a sample essay with enough words to pass the length requirement. " * 4,
+            "rubric_focus": ["content_relevance", "coherence", "grammar", "lexical_accuracy"],
+            "min_response_words": 120,
+            "max_response_words": 180,
+            "shared_options": [],
+            "passage": {
+                "title": "Demo Writing",
+                "paragraphs": [
+                    "Suppose your university is considering whether academic writing should be a required course for all first-year students. You are now to write an essay stating your view on this issue. You will have 30 minutes for this task. You will have 30 minutes to write the essay. You should write at least 120 words but no more than 180 words."
+                ],
+            },
+            "questions": [],
+            "answer_key": [],
+            "analysis": {"item_explanations": [], "test_tips": []},
+            "vocabulary": [],
+        }
+        normalized = self.pipeline._postprocess_payload(
+            payload,
+            Level.CET4,
+            QuestionType.WRITING,
+            None,
+        )
+        text = normalized["passage"]["paragraphs"][0]
+        self.assertEqual(text.lower().count("you will have 30 minutes"), 1)
+
+    def test_postprocess_objective_payload_clears_subjective_fields(self) -> None:
+        payload = {
+            "title": "Demo Cloze",
+            "topic": "transport",
+            "task_prompt": "Ignore me",
+            "reference_answer": "Ignore me too",
+            "rubric_focus": ["x", "y", "z", "w"],
+            "min_response_words": 120,
+            "max_response_words": 180,
+            "shared_options": ["A. test"] * 15,
+            "passage": {"title": "Demo", "paragraphs": ["Text with [1] [2] [3] [4] [5] [6] [7] [8] [9] [10]."]},
+            "questions": [{"id": "q1", "prompt": "Blank 1", "skill_tag": "logic"}],
+            "answer_key": ["A"],
+            "analysis": {"item_explanations": [{"question_id": "q1", "correct_answer": "A", "explanation": "中文"}], "test_tips": ["a", "b", "c"]},
+            "vocabulary": [{"lemma": "test", "surface_form": "test", "level_hint": "cet4", "meaning_zh": "测试", "example_en": "This is a test."}],
+        }
+        normalized = self.pipeline._postprocess_payload(
+            payload,
+            Level.CET4,
+            QuestionType.BANKED_CLOZE,
+            None,
+        )
+        self.assertEqual(normalized["task_prompt"], "")
+        self.assertEqual(normalized["reference_answer"], "")
+        self.assertEqual(normalized["rubric_focus"], [])
+        self.assertEqual(normalized["min_response_words"], 0)
+        self.assertEqual(normalized["max_response_words"], 0)
 
 
 if __name__ == "__main__":

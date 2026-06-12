@@ -657,7 +657,9 @@ class Database:
         accuracy = max(0.0, float(row.get("accuracy", 0.0)))
         if target <= 0.0:
             return 0.0
-        return min((accuracy / target) * 100.0, 130.0)
+        # Home-page normalized metrics should stay within 0-100 so that
+        # the displayed "index" and progress visuals remain consistent.
+        return min((accuracy / target) * 100.0, 100.0)
 
     @classmethod
     def _home_pace_index(cls, row: dict[str, Any]) -> float:

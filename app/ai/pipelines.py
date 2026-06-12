@@ -76,7 +76,7 @@ class QuestionGenerationPipeline:
         )
         retry_errors: list[str] | None = None
         last_error: Exception | None = None
-        max_generation_rounds = 3
+        max_generation_rounds = 4
         for generation_round in range(1, max_generation_rounds + 1):
             if generation_round > 1:
                 self._report(
@@ -136,6 +136,7 @@ class QuestionGenerationPipeline:
             parameters_schema=self._tool_parameters_schema(level, question_type),
             temperature=self._generation_temperature(question_type),
             max_tokens=self._max_tokens(question_type),
+            request_timeout=self._request_timeout(question_type, repair=False),
         )
         payload = self._postprocess_payload(payload, level, question_type, slot)
         self._report(
@@ -329,17 +330,18 @@ class QuestionGenerationPipeline:
             word_spec = "CET4 200-250 words; CET6 250-300 words."
             return (
                 f"{word_spec} Use 10 blanks in the passage marked [1]...[10]. "
-                "Provide exactly 15 shared options labeled A. to O. "
+                "Follow the real CET Section A format closely: provide exactly 15 shared options labeled A. to O. in a word bank following the passage. "
                 "Each shared option must be one English word only, not a phrase or clause. "
+                "Read-through coherence matters: the passage should read like one adapted English article rather than a coaching handout or list of advice. "
                 "Targets and distractors should be CET-like in part of speech and collocation difficulty. "
-                "Each of the 10 answers must use a different letter; no option may be reused. "
-                "The passage should read like one adapted English article rather than a coaching handout or list of advice."
+                "Each of the 10 answers must use a different letter; no option may be reused."
             )
         if question_type is QuestionType.LONG_READING:
             word_spec = "CET4 850-1150 words; CET6 1050-1350 words."
             return (
                 f"{word_spec} Provide exactly 10 statements for paragraph matching. "
-                "Paragraphs must be labeled A., B., C. ... with 10-14 total paragraphs, and at least one paragraph should be redundant or one paragraph may answer more than one item. "
+                "Follow the real CET Section B format closely: each statement contains information given in one of the paragraphs, and the same paragraph may be chosen more than once. "
+                "Paragraphs must be labeled A., B., C. ... with 10-14 total paragraphs. "
                 "Each matching item must be an English statement, not a question, and must not include paragraph labels. "
                 "The long passage should have clear article logic and paragraph functions rather than reading like disconnected mini-paragraphs."
             )
@@ -356,7 +358,10 @@ class QuestionGenerationPipeline:
                 f"{style_hint} "
                 "Provide an exam-style task prompt in English, one brief content prompt paragraph, a high-scoring sample essay, and rubric focus tags. "
                 "For CET4, strongly prefer prompts that look like short official exam instructions built around a campus or social situation, often beginning with 'Suppose ...' and continuing with 'You are now to write ...'. "
+                "For CET4, prefer the compact official pattern of one situational sentence, one 'You are now to write ...' sentence, one time sentence, and one word-count sentence, all merged into one paragraph. "
+                "Avoid adding extra debate lead-ins such as 'Some argue ... while others ...' unless the prompt absolutely requires that setup. "
                 "For CET6, strongly prefer prompts that look like official sentence-led tasks such as 'write an essay that begins with the sentence ...', followed by brief official guidance. "
+                "For CET6, prefer the official sequence: allowed 30 minutes; begins with the sentence '...'; make comments/cite examples/use personal experiences; word-count line; copy-the-sentence line. "
                 "Keep the visible content prompt brief, like real CET tasks, rather than expanding it into a long teacher-style explanation. "
                 "The visible content prompt should usually be one short paragraph rather than two separate blocks. "
                 "Do not use explicit numbered outlines such as 1., 2., 3. in the prompt lines. "
@@ -374,27 +379,31 @@ class QuestionGenerationPipeline:
         slot_hint = f"This is careful reading slot {slot}. " if slot else ""
         if level is Level.CET4 and slot == 1:
             slot_style = (
-                "Model it as a fact-driven CET4 passage: usually research, experiment, medicine, health, or science-popularization material. "
-                "Question stems should naturally use words like experiment, study, researcher, participant, result, or finding when appropriate. "
-                "Most items should focus on cause-and-effect detail, study findings, result interpretation, and definition in context. "
+                "Model it as CET4 Section C Passage One from an adapted original English source. "
+                "Real papers show broad themes such as health, science, education, work, food, public life, or social observation. "
+                "Keep it a little more fact-led and explanatory than Passage Two, but do not force it into a formal lab-report mold. "
+                "Use common real-paper stem families such as 'What do we learn from the passage about ...?', 'What does the author say about ...?', 'Why do ...?', or 'What does the author suggest near the end of the passage?'. "
             )
         elif level is Level.CET4 and slot == 2:
             slot_style = (
-                "Model it as a viewpoint-driven CET4 passage: usually social-life, campus-life, consumer, or public-psychology material. "
-                "Question stems should naturally use words like trend, consumer, reason, reaction, suggestion, or attitude when appropriate. "
-                "Most items should focus on implicit inference, reason analysis, group reaction, example purpose, and author suggestion or viewpoint. "
+                "Model it as CET4 Section C Passage Two from an adapted original English source. "
+                "Real papers often use themes such as work, culture, psychology, consumption, art, education, technology, or everyday social issues. "
+                "Keep it slightly more interpretive or opinion-colored than Passage One, but still text-based and non-literary. "
+                "Use common real-paper stem families such as 'What often happens when ...?', 'What is ...?', 'What can be inferred ...?', or 'What does the passage suggest ...?'. "
             )
         elif level is Level.CET6 and slot == 1:
             slot_style = (
-                "Model it as a fact-driven CET6 passage: usually business, economics, workplace strategy, or market-report material. "
-                "Question stems should naturally use words like motive, consequence, strategy, expansion, or comparison when appropriate. "
-                "Most items should focus on cause-and-effect detail, market consequence, result interpretation, comparative evidence, and term-in-context understanding. "
+                "Model it as CET6 Section C Passage One from an adapted original English source. "
+                "Real papers show broad themes such as society, work, public policy, psychology, education, health, economics, or personal development rather than only business topics. "
+                "Keep it denser and more analytical than CET4, but not locked to a single domain formula. "
+                "Use common real-paper stem families such as 'What often happens when ...?', 'What does the author say about ...?', 'What can we infer ...?', or 'What does ... indicate?'. "
             )
         else:
             slot_style = (
-                "Model it as a viewpoint-driven CET6 passage: usually psychology, ethics, technology-reflection, or social-critique material with denser reasoning. "
-                "Question stems should naturally use words like infer, cite, imply, stance, skeptical, or critical when appropriate. "
-                "Most items should focus on implicit inference, citation/example purpose, implied logic, and nuanced attitude or main idea. "
+                "Model it as CET6 Section C Passage Two from an adapted original English source. "
+                "Real papers often use themes such as social issues, ethics, psychology, technology, economy, history, or culture, usually with stronger reflection or argument than Passage One. "
+                "Keep it close to a real magazine, newspaper, or commentary passage instead of an abstract AI-generated lecture. "
+                "Use common real-paper stem families such as 'What can be inferred ...?', 'Why does the author mention ...?', 'What does the passage imply ...?', or 'What is the author's attitude ...?'. "
             )
         return (
             f"{slot_hint}{word_spec} Provide exactly 5 four-option multiple-choice questions. "
@@ -425,7 +434,6 @@ class QuestionGenerationPipeline:
     ) -> str:
         level_label = LEVEL_LABELS[level]
         type_label = QUESTION_TYPE_LABELS[question_type]
-        schema = self._schema_example(level, question_type)
         retry_note = ""
         if retry_errors:
             retry_note = (
@@ -464,7 +472,8 @@ class QuestionGenerationPipeline:
             "- For long reading, most statements should be compact information-bearing claims rather than 'The passage says ...' summaries.\n"
             "- For careful reading, distribute correct options naturally and make distractors plausible.\n"
             "- For careful reading, keep four options parallel in grammar and length, and never use all/none of the above.\n"
-            "- For careful reading, stems should reflect the designated passage type: fact-driven passages favor study/report/process/result wording, while viewpoint-driven passages favor reason/infer/purpose/attitude wording.\n"
+            "- For careful reading, follow the real-paper convention that both passages belong to Section C; treat slot 1 and slot 2 as Passage One and Passage Two inside the same section rather than inventing a new section label.\n"
+            "- For careful reading, stems should sound like real CET questions or unfinished statements, not like topic-specific template slogans.\n"
             "- For writing, produce a CET-style prompt format such as a short situational instruction, a survey/opinion task, a quoted statement, or a sentence-led argumentative task as appropriate to the level.\n"
             "- For CET4 writing, the prompt should look closer to official exam wording such as 'Suppose ... You are now to write ...' than to abstract philosophical debate.\n"
             "- For CET6 writing, the prompt should often look like an official sentence-led task built around a quoted sentence, followed by very brief guidance.\n"
@@ -476,8 +485,8 @@ class QuestionGenerationPipeline:
             "- Novelty rule: do not lightly rename a recent topic; if a nearby topic reappears, change the source angle, scenario, and paragraph logic enough to feel like a different authentic passage.\n"
             "- Use concise Chinese explanations that point back to textual evidence or reasoning path.\n"
             f"Question-type details:\n{self._question_type_details(question_type, level, slot)}\n"
-            "Return one JSON object using exactly this schema shape and no extra top-level keys:\n"
-            f"{schema}"
+            f"Structured output contract:\n{self._response_contract(question_type)}\n"
+            "Return through the provided tool schema only. Do not add markdown fences or extra prose."
         )
 
     def _model_name(self) -> str:
@@ -507,7 +516,7 @@ class QuestionGenerationPipeline:
             f"Blueprint:\n{json.dumps(blueprint, ensure_ascii=False)}\n"
             f"Validation errors:\n{json.dumps(errors, ensure_ascii=False)}\n"
             f"Targeted repair guidance:\n{self._targeted_repair_guidance(level, question_type, errors)}\n"
-            f"Required schema:\n{self._schema_example(level, question_type)}\n"
+            f"Structured output contract:\n{self._response_contract(question_type)}\n"
             "Original JSON:\n"
             f"{json.dumps(payload, ensure_ascii=False)}\n"
             "Return a corrected full JSON object only. Preserve valid content and change only what is needed. "
@@ -528,7 +537,7 @@ class QuestionGenerationPipeline:
         current_payload = payload
         current_errors = errors
         last_exception: QuestionSetValidationError | None = None
-        for repair_round in range(1, 3):
+        for repair_round in range(1, 4):
             self._report(
                 progress_callback,
                 "repair",
@@ -550,6 +559,7 @@ class QuestionGenerationPipeline:
                 parameters_schema=self._tool_parameters_schema(level, question_type),
                 temperature=0.1,
                 max_tokens=self._max_tokens(question_type),
+                request_timeout=self._request_timeout(question_type, repair=True),
             )
             repaired_payload = self._postprocess_payload(
                 repaired_payload,
@@ -610,6 +620,16 @@ class QuestionGenerationPipeline:
         ]
         normalized["min_response_words"] = int(normalized.get("min_response_words", 0) or 0)
         normalized["max_response_words"] = int(normalized.get("max_response_words", 0) or 0)
+        if question_type in {
+            QuestionType.BANKED_CLOZE,
+            QuestionType.LONG_READING,
+            QuestionType.CAREFUL_READING,
+        }:
+            normalized["task_prompt"] = ""
+            normalized["reference_answer"] = ""
+            normalized["rubric_focus"] = []
+            normalized["min_response_words"] = 0
+            normalized["max_response_words"] = 0
         if question_type is QuestionType.WRITING:
             normalized["task_prompt"] = self._normalize_writing_task_prompt(
                 normalized.get("task_prompt", ""),
@@ -828,6 +848,13 @@ class QuestionGenerationPipeline:
                 f"Write an essay on {topic}. You should write at least {min_words} words but no more than {max_words} words."
             ]
         content = " ".join(cleaned).strip()
+        if level is Level.CET4 and "suppose" in content.lower() and "you are now to write" in content.lower():
+            content = re.sub(
+                r"\bSome argue .*?(?:\.|;)\s*",
+                "",
+                content,
+                flags=re.IGNORECASE,
+            ).strip()
         content = re.sub(
             r"\bWrite about \d+ words but no more than \d+ words\.?",
             "",
@@ -849,6 +876,43 @@ class QuestionGenerationPipeline:
         if "you should write" not in content.lower():
             content = (
                 f"{content} You should write at least {min_words} words but no more than {max_words} words."
+            ).strip()
+        if level is Level.CET4 and "you will have 30 minutes to write the essay" not in content.lower():
+            content = (
+                content.replace(
+                    "You should write at least",
+                    "You will have 30 minutes to write the essay. You should write at least",
+                    1,
+                )
+                if "you should write at least" in content.lower()
+                else f"{content} You will have 30 minutes to write the essay."
+            ).strip()
+        if level is Level.CET4:
+            content = re.sub(
+                r"\bYou are allowed 30 minutes(?: for this task)?\.",
+                "You will have 30 minutes to write the essay.",
+                content,
+                flags=re.IGNORECASE,
+            ).strip()
+        content = re.sub(
+            r"(You will have 30 minutes(?: for this task)?\.)\s*(You will have 30 minutes to write the essay\.)",
+            r"\2",
+            content,
+            flags=re.IGNORECASE,
+        ).strip()
+        content = re.sub(
+            r"(You will have 30 minutes to write the essay\.)\s*(You will have 30 minutes to write the essay\.)",
+            r"\1",
+            content,
+            flags=re.IGNORECASE,
+        ).strip()
+        if (
+            level is Level.CET6
+            and "begins with the sentence" in content.lower()
+            and "you can make comments, cite examples or use your personal experiences to develop your essay" not in content.lower()
+        ):
+            content = (
+                f"{content} You can make comments, cite examples or use your personal experiences to develop your essay."
             ).strip()
         if (
             level is Level.CET6
@@ -902,6 +966,11 @@ class QuestionGenerationPipeline:
         question_type: QuestionType,
     ) -> dict[str, Any]:
         skill_enums = self._skill_enums(question_type)
+        is_objective = question_type in {
+            QuestionType.BANKED_CLOZE,
+            QuestionType.LONG_READING,
+            QuestionType.CAREFUL_READING,
+        }
         if question_type is QuestionType.BANKED_CLOZE:
             question_schema = {
                 "type": "object",
@@ -978,6 +1047,28 @@ class QuestionGenerationPipeline:
             shared_options_schema["maxItems"] = 15
         else:
             shared_options_schema["maxItems"] = 0
+        if is_objective:
+            task_prompt_schema: dict[str, Any] = {"type": "string", "enum": [""]}
+            reference_answer_schema: dict[str, Any] = {"type": "string", "enum": [""]}
+            rubric_focus_schema: dict[str, Any] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 0,
+                "maxItems": 0,
+            }
+            min_response_words_schema: dict[str, Any] = {"type": "integer", "enum": [0]}
+            max_response_words_schema: dict[str, Any] = {"type": "integer", "enum": [0]}
+        else:
+            task_prompt_schema = {"type": "string"}
+            reference_answer_schema = {"type": "string"}
+            rubric_focus_schema = {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 4,
+                "maxItems": 6,
+            }
+            min_response_words_schema = {"type": "integer"}
+            max_response_words_schema = {"type": "integer"}
         answer_item_enum = (
             ["A", "B", "C", "D"] if question_type is QuestionType.CAREFUL_READING else None
         )
@@ -996,16 +1087,11 @@ class QuestionGenerationPipeline:
             "properties": {
                 "title": {"type": "string"},
                 "topic": {"type": "string"},
-                "task_prompt": {"type": "string"},
-                "reference_answer": {"type": "string"},
-                "rubric_focus": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 4,
-                    "maxItems": 6,
-                },
-                "min_response_words": {"type": "integer"},
-                "max_response_words": {"type": "integer"},
+                "task_prompt": task_prompt_schema,
+                "reference_answer": reference_answer_schema,
+                "rubric_focus": rubric_focus_schema,
+                "min_response_words": min_response_words_schema,
+                "max_response_words": max_response_words_schema,
                 "shared_options": shared_options_schema,
                 "passage": {
                     "type": "object",
@@ -1083,6 +1169,37 @@ class QuestionGenerationPipeline:
         }
 
     @staticmethod
+    def _response_contract(question_type: QuestionType) -> str:
+        common = (
+            "- top-level keys: title, topic, task_prompt, reference_answer, rubric_focus, "
+            "min_response_words, max_response_words, shared_options, passage, questions, answer_key, analysis, vocabulary.\n"
+            "- passage must contain title and paragraphs.\n"
+            "- analysis must contain overall_strategy, overall_summary, item_explanations, and exactly 3 test_tips.\n"
+            "- each item_explanation must contain question_id, correct_answer, explanation, and skill_tag.\n"
+        )
+        if question_type in {
+            QuestionType.BANKED_CLOZE,
+            QuestionType.LONG_READING,
+            QuestionType.CAREFUL_READING,
+        }:
+            return (
+                common
+                + "- for objective sets, task_prompt and reference_answer must be empty strings.\n"
+                + "- for objective sets, rubric_focus must be an empty array and min_response_words/max_response_words must be 0."
+            )
+        if question_type is QuestionType.WRITING:
+            return (
+                common
+                + "- writing must keep shared_options empty, questions empty, and answer_key empty.\n"
+                + "- writing must provide a CET-style prompt paragraph and a high-scoring sample essay."
+            )
+        return (
+            common
+            + "- translation must keep shared_options empty, questions empty, and answer_key empty.\n"
+            + "- translation must provide one Chinese source paragraph and one natural English reference translation."
+        )
+
+    @staticmethod
     def _skill_enums(question_type: QuestionType) -> list[str]:
         if question_type is QuestionType.BANKED_CLOZE:
             return ["vocabulary", "logic", "collocation", "context clue"]
@@ -1123,6 +1240,18 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.CAREFUL_READING:
             return 0.36
         return 0.4
+
+    @staticmethod
+    def _request_timeout(question_type: QuestionType, *, repair: bool) -> float:
+        if question_type is QuestionType.LONG_READING:
+            return 190.0 if repair else 240.0
+        if question_type is QuestionType.CAREFUL_READING:
+            return 150.0 if repair else 200.0
+        if question_type is QuestionType.BANKED_CLOZE:
+            return 140.0 if repair else 190.0
+        if question_type is QuestionType.WRITING:
+            return 140.0 if repair else 180.0
+        return 140.0 if repair else 180.0
 
     @staticmethod
     def _target_word_count(level: Level, question_type: QuestionType) -> int:
@@ -1184,9 +1313,9 @@ class QuestionGenerationPipeline:
             )
         if question_type is QuestionType.WRITING:
             return (
-                "scenario-based campus or social essay prompt"
+                "campus-institution CET4 writing prompt or official sentence-led CET6 essay prompt"
                 if level is Level.CET4
-                else "sentence-led or view-comment essay prompt"
+                else "quoted-sentence CET6 essay prompt on education, society, career, values, or technology"
             )
         if question_type is QuestionType.TRANSLATION:
             return (
@@ -1218,12 +1347,12 @@ class QuestionGenerationPipeline:
             return "exam-style writing instruction in standard written English"
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
             if level is Level.CET4:
-                return "clear social or consumer commentary in standard written English"
-            return "mildly academic reflective or critical standard written English with denser logic"
+                return "clear expository or lightly interpretive standard written English from education, culture, society, technology, or daily-life topics"
+            return "mildly academic analytical or reflective standard written English with denser logic"
         if question_type is QuestionType.CAREFUL_READING:
             if level is Level.CET4:
-                return "clear research-style or science-popularization standard written English"
-            return "clear business or economics commentary in standard written English"
+                return "clear explanatory standard written English from science, health, education, work, or public-life topics"
+            return "clear analytical standard written English from society, work, public affairs, psychology, economics, or education topics"
         return "clear exam-style standard written English"
 
     @staticmethod
@@ -1242,35 +1371,35 @@ class QuestionGenerationPipeline:
             return ["translation accuracy", "translation fluency", "grammar", "lexical accuracy"]
         if slot == 1 and level is Level.CET4:
             return [
-                "cause-and-effect detail",
-                "study findings or result interpretation",
-                "participant / variable / procedure detail",
+                "what we learn from the passage about a concrete issue",
+                "detail retrieval grounded in evidence, example, or explanation",
+                "reason, result, trend, or finding interpretation when natural",
                 "text-supported inference",
-                "definition or term in context when natural",
+                "term in context only when the passage naturally supports it",
             ]
         if slot == 2 and level is Level.CET4:
             return [
-                "implicit inference",
-                "reason behind a trend or behavior",
-                "group reaction or suggestion",
-                "example purpose",
-                "author viewpoint or attitude when natural",
+                "what the passage says or suggests about a social, cultural, or practical issue",
+                "conclusion, expectation, or implication from the passage",
+                "author view, evaluation, or recommendation when natural",
+                "reason or example purpose",
+                "inference supported by the passage rather than free speculation",
             ]
         if slot == 1 and level is Level.CET6:
             return [
-                "cause-and-effect detail in business or market logic",
-                "market finding or consequence interpretation",
-                "comparison backed by evidence",
-                "strategy detail or report conclusion",
-                "term in context when natural",
+                "what happens, what is found, or what is said in a denser analytical passage",
+                "problem, finding, consequence, or policy implication",
+                "advice, response, or practical implication when natural",
+                "comparison or evidence-backed interpretation",
+                "term in context only when the passage naturally supports it",
             ]
         if slot == 2:
             return [
-                "implicit inference under denser reflective logic",
-                "example purpose or citation purpose",
-                "implied stance or nuanced attitude",
-                "main idea under abstract exposition",
-                "detail only as support for the author's line of reasoning",
+                "what the author thinks about a social, ethical, or technological issue",
+                "example, metaphor, or citation purpose",
+                "implied judgment, response, or broader implication",
+                "problem framing and reasoning under denser exposition",
+                "detail used as support for the author's line of argument",
             ]
         return [
             "main idea or author purpose",
@@ -1327,17 +1456,17 @@ class QuestionGenerationPipeline:
             if level is Level.CET4:
                 controls.extend(
                     [
-                        "keep the experimental setup, groups, or findings explicitly stated",
-                        "prefer cause/effect and finding questions over broad attitude questions",
-                        "prefer purpose, process, and result questions before abstract interpretation",
+                        "prefer concrete textual evidence and explicit local clues over overly abstract inference chains",
+                        "let detail, explanation, effect, and suggestion questions dominate more than attitude questions",
+                        "allow one or two broad official stems such as 'What do we learn...' or 'What does the author say...' instead of forcing study jargon",
                     ]
                 )
             else:
                 controls.extend(
                     [
-                        "keep the market logic and strategic consequences explicit enough to text-check",
-                        "prefer consequence, report finding, and comparison questions over broad attitude questions",
-                        "prefer concrete business evidence before abstract reflection",
+                        "keep the analysis dense but text-checkable, even when the topic is not business-specific",
+                        "prefer concrete claims, evidence, effects, or implications before abstract attitude judgment",
+                        "avoid forcing all questions into motive/strategy/comparison wording if the passage does not naturally support it",
                     ]
                 )
         if question_type is QuestionType.WRITING:
@@ -1440,13 +1569,13 @@ class QuestionGenerationPipeline:
             ]
         if question_type is QuestionType.CAREFUL_READING and slot == 1 and level is Level.CET4:
             return [
-                "distractors should reflect confusion among study purpose, procedure, groups, and findings",
-                "one option may sound scientific but misstate the actual result, variable, or causal link",
+                "distractors should reflect confusion among details, causes, effects, suggestions, or local wording in the passage",
+                "one option may echo the passage closely but distort the scope, emphasis, or actual conclusion",
             ]
         if question_type is QuestionType.CAREFUL_READING and slot == 1 and level is Level.CET6:
             return [
-                "distractors should reflect confusion among business motive, expansion consequence, and comparative advantage",
-                "one option may sound commercially sensible but overstate what the report or market evidence actually proves",
+                "distractors should reflect close paraphrase confusion, incomplete evidence reading, or overstated interpretation",
+                "one option may sound plausible and sophisticated but go beyond what the passage actually supports",
             ]
         return [
             "distractors should reflect common misreadings or overgeneralizations",
@@ -1491,10 +1620,10 @@ class QuestionGenerationPipeline:
             return "Chinese source passage suitable for CET paragraph translation"
         if slot == 1:
             return (
-                "adapted research report, science explainer, or business report from original English materials"
+                "adapted expository or analytical passage from original English materials, often slightly more fact-led than the companion passage"
             )
         return (
-            "adapted opinion piece, social commentary, or reflective magazine article from original English materials"
+            "adapted article, commentary, or reflective passage from original English materials, often slightly more interpretive than the companion passage"
         )
 
     @staticmethod
@@ -1502,9 +1631,9 @@ class QuestionGenerationPipeline:
         if question_type is not QuestionType.WRITING:
             return ""
         return (
-            "mainly short official exam instructions, especially CET4 forms like 'Suppose ... You are now to write ...'"
+            "mainly short official exam instructions in a single-paragraph CET4 real-paper pattern: 'Suppose ... You are now to write ... You will have 30 minutes to write the essay ...'"
             if level is Level.CET4
-            else "mainly official sentence-led CET6 writing, especially forms like 'write an essay that begins with the sentence ...'"
+            else "mainly official exam instructions in a sentence-led CET6 real-paper pattern: 'For this part ... write an essay that begins with the sentence ... You can make comments, cite examples ... You should copy the sentence ...'"
         )
 
     @staticmethod
@@ -1513,14 +1642,14 @@ class QuestionGenerationPipeline:
             return []
         if level is Level.CET4:
             return [
-                "A short campus or social situation beginning with 'Suppose ...' and followed by 'You are now to write ...'.",
-                "A compact official-looking instruction about a practical campus or social issue.",
-                "A short CET4 task paragraph without numbered sub-points.",
+                "Directions: Suppose the student union of your university is collecting opinions on improving its work for the coming year. You are now to write a response by suggesting how it can better enrich student life. You will have 30 minutes to write the essay. You should write at least 120 words but no more than 180 words.",
+                "Directions: Suppose your university is organizing a forum on how students can make the best use of on-campus resources for academic development. You are now to write an essay to express your view. You will have 30 minutes to write the essay. You should write at least 120 words but no more than 180 words.",
+                "Directions: Suppose your university is conducting a survey to collect students' opinions on the appropriate use of AI technology in assisting learning. You are now to write an essay to express your view. You will have 30 minutes to write the essay. You should write at least 120 words but no more than 180 words.",
             ]
         return [
-            "A sentence-led official task such as 'For this part, you are allowed 30 minutes to write an essay that begins with the sentence ...'.",
-            "A quoted saying or statement followed by brief official guidance on commenting or citing examples.",
-            "A compact CET6 prompt paragraph without numbered sub-points or classroom-style scaffolding.",
+            "Directions: For this part, you are allowed 30 minutes to write an essay that begins with the sentence 'While striving for the Chinese Dream, young people enjoy more opportunities to realize their self-worth.' You can make comments, cite examples or use your personal experiences to develop your essay. You should write at least 150 words but no more than 200 words. You should copy the sentence given in quotes at the beginning of your essay.",
+            "Directions: For this part, you are allowed 30 minutes to write an essay that begins with the sentence 'It is believed that teachers can exert a profound influence on their students' academic pursuit and personal development.' You can make comments, cite examples or use your personal experiences to develop your essay. You should write at least 150 words but no more than 200 words. You should copy the sentence given in quotes at the beginning of your essay.",
+            "Directions: For this part, you are allowed 30 minutes to write an essay that begins with the sentence 'With the increasing application of AI technology, there is a growing concern that it may negatively impact human creativity.' You can make comments, cite examples or use your personal experiences to develop your essay. You should write at least 150 words but no more than 200 words. You should copy the sentence given in quotes at the beginning of your essay.",
         ]
 
     @staticmethod
@@ -1557,18 +1686,18 @@ class QuestionGenerationPipeline:
             return "CET translation prompt with one Chinese source paragraph."
         if level is Level.CET4 and slot == 1:
             return (
-                "CET4 careful reading passage one: fact-driven research, health, medicine, experiment, or science-popularization article."
+                "CET4 Section C Passage One: an adapted expository passage from real-paper-style sources on health, science, education, work, food, or public life, usually slightly more fact-led than Passage Two."
             )
         if level is Level.CET4 and slot == 2:
             return (
-                "CET4 careful reading passage two: viewpoint-driven social, campus, youth-consumer, or everyday-psychology commentary."
+                "CET4 Section C Passage Two: an adapted article on work, psychology, culture, education, consumption, technology, or everyday social issues, usually slightly more interpretive than Passage One."
             )
         if level is Level.CET6 and slot == 1:
             return (
-                "CET6 careful reading passage one: fact-driven business, economics, workplace, or market-report article."
+                "CET6 Section C Passage One: an adapted analytical passage on society, work, public affairs, psychology, education, health, economics, or personal development."
             )
         return (
-            "CET6 careful reading passage two: viewpoint-driven psychology, ethics, technology-reflection, or social-critique article."
+            "CET6 Section C Passage Two: an adapted analytical or reflective passage on social issues, ethics, psychology, technology, economy, history, or culture."
         )
 
     @staticmethod
@@ -1604,24 +1733,22 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.CAREFUL_READING and slot == 1:
             return (
                 [
-                    "background or research question",
-                    "method, groups, variable, or procedure details",
-                    "findings and evidence",
-                    "brief implication or conclusion",
+                    "introduce a concrete issue, finding, situation, or explanatory claim",
+                    "develop details, reasons, examples, data, or evidence",
+                    "end with implication, suggestion, or broader takeaway",
                 ]
                 if level is Level.CET4
                 else [
-                    "market background or business situation",
-                    "strategy, motive, comparison, or institutional move",
-                    "report findings, consequences, or business evidence",
-                    "limited implication grounded in the evidence",
+                    "introduce a concrete problem, claim, or line of analysis",
+                    "develop it with evidence, comparison, examples, or reasoning",
+                    "end with implication, warning, judgment, or recommendation",
                 ]
             )
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
             return (
                 [
-                    "introduce a trend, habit, or social phenomenon",
-                    "analyze reasons, reactions, or examples",
+                    "introduce a problem, social pattern, belief, or phenomenon",
+                    "analyze it through reasons, examples, contrast, or consequences",
                     "surface the author's suggestion, judgment, or implied view",
                 ]
                 if level is Level.CET4
@@ -1657,35 +1784,35 @@ class QuestionGenerationPipeline:
             )
         if question_type is QuestionType.CAREFUL_READING and level is Level.CET4 and slot == 1:
             return [
-                "What was the primary purpose of the study or experiment?",
-                "How did one group of participants differ from another?",
-                "What did the researchers find about ...?",
-                "The word or phrase ... most nearly means ____.",
-                "What can be inferred from the results?",
+                "What do we learn from the passage about ...?",
+                "What does the author say about ...?",
+                "What is one of the reasons for ...?",
+                "What is the general trend in ...?",
+                "What can we conclude from the passage or the new findings?",
             ]
         if question_type is QuestionType.CAREFUL_READING and level is Level.CET4 and slot == 2:
             return [
-                "What contributes to the growing popularity of ...?",
-                "How do certain groups react to this trend?",
+                "What does the passage say about ...?",
+                "What does the author think of ...?",
+                "What can we expect of ...?",
+                "What can we conclude about ...?",
                 "Why does the author mention ...?",
-                "What does the author suggest ... do?",
-                "What can be inferred about ...?",
             ]
         if question_type is QuestionType.CAREFUL_READING and level is Level.CET6 and slot == 1:
             return [
-                "What is the underlying motive behind ...?",
-                "What consequence did ... bring to ...?",
-                "In what way is ... superior to ... according to the passage?",
-                "What does the report indicate about ...?",
-                "The word or phrase ... most likely refers to ____.",
+                "What often happens when ...?",
+                "What does the author say about ...?",
+                "What is the finding of one study about ...?",
+                "What is the problem with ...?",
+                "How can ... according to the passage?",
             ]
         if question_type is QuestionType.CAREFUL_READING and level is Level.CET6 and slot == 2:
             return [
-                "What can be inferred from the author's discussion of ...?",
-                "Why does the author cite the example of ...?",
-                "What does the passage imply about ...?",
-                "What is the author's attitude toward ...?",
-                "Which of the following best describes the author's stance?",
+                "What does the author think about ...?",
+                "What do we learn from the passage about ...?",
+                "Why does the author use or mention ...?",
+                "What is important to ...?",
+                "What can be inferred from the passage?",
             ]
         return []
 
@@ -1715,6 +1842,7 @@ class QuestionGenerationPipeline:
                 [
                     "avoid overusing broad attitude questions when the passage is fact-driven",
                     "avoid drifting into a vague inspirational conclusion unrelated to the evidence",
+                    "avoid forcing every fact-led set into experiment jargon or business-report jargon if the real-paper topic does not call for it",
                 ]
             )
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
@@ -1722,6 +1850,7 @@ class QuestionGenerationPipeline:
                 [
                     "avoid pure fact lookup dominating the set when the passage is viewpoint-driven",
                     "avoid turning attitude or inference items into easy slogan recognition",
+                    "avoid forcing an attitude question or vocabulary question if the passage would naturally support stronger conclusion, implication, or example-purpose items instead",
                 ]
             )
         if question_type is QuestionType.CAREFUL_READING and level is Level.CET4:
@@ -1789,61 +1918,61 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.CAREFUL_READING and slot == 1:
             return (
                 [
-                    "sleep deprivation and memory performance",
+                    "circadian rhythm and medication timing",
+                    "retirement delay and economic pressure",
+                    "pandas and evolutionary comfort",
+                    "talent and sustained effort",
+                    "junk food advertising and health habits",
+                    "genetic testing and personal decision making",
+                    "plant-based meat and food choice",
+                    "sleep and infant dreaming",
                     "screen time and student attention",
-                    "exercise habits and learning efficiency",
-                    "nutrition research and daily energy levels",
-                    "stress experiments and college decision making",
-                    "medical or behavioral study findings in student life",
-                    "breakfast habits and classroom performance",
-                    "walking routines and concentration in students",
-                    "noise exposure and study efficiency",
-                    "reading format and memory retention",
-                    "study breaks and sustained attention",
+                    "health routines and learning efficiency",
+                    "work patterns and life planning",
                 ]
                 if level is Level.CET4
                 else [
-                    "pricing strategy and market competition",
-                    "platform expansion and local business pressure",
-                    "workplace incentives and productivity trade-offs",
-                    "consumer credit and retail strategy",
-                    "business models and competitive advantage",
-                    "corporate expansion and market consequence",
-                    "subscription models and customer retention",
-                    "automation and workplace restructuring",
-                    "supply chain pressure and pricing decisions",
-                    "brand strategy and consumer loyalty",
-                    "labor-market incentives and firm behavior",
+                    "friendship and radical individualism",
+                    "interdependence and unwanted advice",
+                    "mindfulness and health benefits",
+                    "public libraries and community life",
+                    "career anxiety and self-worth",
+                    "simulation training and real-world judgment",
+                    "GDP and social well-being",
+                    "social media use and personal development",
+                    "job application pressure and preparation",
+                    "AI and human communication concerns",
+                    "education, public life, and social responsibility",
                 ]
             )
         if question_type is QuestionType.CAREFUL_READING and slot == 2:
             return (
                 [
-                    "second-hand shopping among young consumers",
-                    "campus social habits and student identity",
-                    "young people's digital behavior and attention",
-                    "public trends and peer influence",
-                    "changing consumer preferences among students",
-                    "social-media habits and everyday decision making",
-                    "shared bicycles and urban student mobility",
-                    "volunteering and social belonging among students",
-                    "digital reading and fragmented attention",
-                    "minimalist consumption among young adults",
-                    "peer influence on campus lifestyle choices",
+                    "physical beauty and social pressure",
+                    "opera, classical music, and popular taste",
+                    "vegan restaurants and changing food culture",
+                    "cross-cultural communication and student growth",
+                    "college Chinese and curriculum debate",
+                    "AI use in learning and student judgment",
+                    "academic writing and university requirements",
+                    "student organizations and campus life",
+                    "campus resources and academic development",
+                    "public opinion, taste, and cultural change",
+                    "society, values, and personal choice",
                 ]
                 if level is Level.CET4
                 else [
-                    "algorithmic influence on deep thinking",
-                    "privacy promises and tech-company credibility",
-                    "echo chambers and public reasoning",
-                    "digital platforms and moral responsibility",
-                    "technology criticism and human autonomy",
-                    "social psychology of online conformity",
-                    "misinformation and civic judgment",
-                    "AI-generated content and trust",
-                    "remote work and identity formation",
-                    "surveillance convenience and personal freedom",
-                    "platform design and democratic discourse",
+                    "truth, equity, and public dialogue",
+                    "solitude and mental focus",
+                    "technology and user frustration",
+                    "women's pay gap and labor-market change",
+                    "social media and responsible use",
+                    "Chinese Dream and self-worth",
+                    "teachers and student development",
+                    "competition and personal challenges",
+                    "AI technology and human communication",
+                    "social issues, identity, and reflection",
+                    "public values and historical understanding",
                 ]
             )
         if question_type is QuestionType.BANKED_CLOZE:
@@ -1885,29 +2014,29 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.WRITING:
             return (
                 [
-                    "reading habits and independent learning",
-                    "exercise and healthy university life",
-                    "volunteering and personal growth",
-                    "time management and study efficiency",
-                    "balanced technology use on campus",
-                    "environmental responsibility in daily life",
-                    "library use and independent learning",
-                    "campus service and student responsibility",
-                    "how to handle stress in college life",
-                    "the importance of teamwork in college",
+                    "improving the work of the student union",
+                    "making the best use of on-campus resources",
+                    "students' cross-cultural communication abilities",
+                    "the necessity of making College Chinese a compulsory course",
+                    "the appropriate use of AI technology in assisting learning",
+                    "academic writing as a required university skill",
+                    "improving campus volunteer or student-support services",
+                    "better use of university library and learning resources",
+                    "ways to enrich student life through campus organizations",
+                    "how universities can better support students' academic development",
                 ]
                 if level is Level.CET4
                 else [
-                    "AI tools and independent thinking",
-                    "lifelong learning in a changing world",
-                    "efficiency and reflection in modern study",
-                    "public trust and responsible communication",
-                    "innovation and human judgment",
-                    "technology and the quality of learning",
-                    "competition and cooperation in modern society",
-                    "individual choice and social responsibility",
-                    "the value of patience in a fast-moving world",
-                    "efficiency and depth in the information age",
+                    "young people, the Chinese Dream, and self-worth",
+                    "teachers' influence on academic pursuit and personal development",
+                    "preparing for challenges in a competitive world",
+                    "using social media properly and responsibly",
+                    "preparing for increasingly demanding job applications",
+                    "AI technology and its impact on human creativity or communication",
+                    "independent thinking in a changing technological world",
+                    "competition, preparation, and personal development",
+                    "education, opportunity, and self-development",
+                    "responsibility, judgment, and modern public life",
                 ]
             )
         if question_type is QuestionType.TRANSLATION:
@@ -2038,6 +2167,7 @@ class QuestionGenerationPipeline:
                 "- shared_options must contain exactly 15 entries labeled A. to O.\n"
                 "- each shared option must be a single English word only.\n"
                 "- answer_key must contain exactly 10 letters, each letter must exist in shared_options, and no letter may repeat.\n"
+                "- follow the real Section A pattern of a word bank placed after the passage rather than per-question options.\n"
                 + (
                     "- CET4 passages should usually stay close to study, health, campus, or public-life topics with explicit local clues.\n"
                     "- Prefer article-like explanation over direct self-help advice or numbered tips.\n"
@@ -2051,6 +2181,7 @@ class QuestionGenerationPipeline:
                 "- passage.paragraphs must contain labeled paragraphs beginning with A., B., C. ...\n"
                 "- questions must contain 10 English statements for matching, not questions.\n"
                 "- answer_key must contain paragraph letters only.\n"
+                "- the prompt flow should reflect the official rule that the same paragraph may answer more than one item.\n"
                 + (
                     "- CET4 long reading should usually feel like a readable explanatory feature or service-style article.\n"
                     "- Statement prompts should often target an example, warning, recommendation, paragraph role, or practical detail.\n"
@@ -2062,13 +2193,15 @@ class QuestionGenerationPipeline:
         if question_type is QuestionType.WRITING:
             max_words = 180 if level is Level.CET4 else 200
             style_note = (
-                "- CET4 prompts should usually stay practical, concrete, and close to campus or daily social issues.\n"
+                "- CET4 prompts should usually stay practical, concrete, and close to campus or university issues.\n"
+                "- CET4 prompts should strongly prefer the real-paper pattern 'Suppose ... You are now to write ... You will have 30 minutes to write the essay ... You should write at least 120 words but no more than 180 words.'\n"
                 if level is Level.CET4
-                else "- CET6 prompts should usually be sentence-led or opinion-led and somewhat more argumentative or abstract than CET4.\n"
+                else "- CET6 prompts should usually be sentence-led and somewhat more argumentative or abstract than CET4.\n"
+                "- CET6 prompts should strongly prefer the real-paper pattern 'For this part ... write an essay that begins with the sentence ... You can make comments, cite examples or use your personal experiences ... You should copy the sentence ...'\n"
             )
             return (
                 "- task_prompt must be an English exam instruction.\n"
-                "- passage.paragraphs must contain 2-3 English prompt lines.\n"
+                "- passage.paragraphs must contain 1 compact English prompt paragraph in official CET style.\n"
                 "- questions and answer_key must both be empty.\n"
                 f"- reference_answer must be a high-scoring English essay within about the official {self.validator.WRITING_MIN_WORDS[level]}-{max_words} word band.\n"
                 f"{style_note}"
@@ -2088,37 +2221,37 @@ class QuestionGenerationPipeline:
             )
         if slot == 1:
             style_note = (
-                "- CET4 Passage One should usually be fact-driven research, medicine, health, or science-popularization material, with question wording around experiment/study/result/participants.\n"
-                "- Passage flow should usually move through background, method/groups, findings, and implication.\n"
+                "- This set should emulate one passage inside Section C, specifically Passage One.\n"
+                "- CET4 Passage One in real papers is often slightly more fact-led and explanatory, but the theme may range across health, science, work, food, education, or public life.\n"
                 if level is Level.CET4
-                else "- CET6 Passage One should usually be fact-driven business, market, workplace, or economics material, with question wording around motive/consequence/strategy/comparison.\n"
-                "- Passage flow should usually move through market background, strategy or motive, evidence or consequences, and limited implication.\n"
+                else "- This set should emulate one passage inside Section C, specifically Passage One.\n"
+                "- CET6 Passage One in real papers is often analytical and text-dense, but the theme may range across society, work, psychology, public issues, economics, health, or education.\n"
             )
             return (
                 "- questions must contain exactly 5 items.\n"
                 "- each question must contain exactly 4 options labeled A. to D.\n"
                 "- question stems may be direct questions or unfinished statements.\n"
                 f"{style_note}"
-                "- prioritize cause/effect, findings, comparisons, and term-in-context over broad attitude questions.\n"
-                "- At least 2 items should feel like purpose/process/findings/comparison questions rather than generic inference wording.\n"
+                "- prioritize official CET-style direct questions or unfinished statements such as what we learn, what the author says, why something happens, what is suggested, and term-in-context when natural.\n"
+                "- keep the question order close to the passage flow.\n"
                 "- do not force all five skill types to appear exactly once; detail questions may appear more than once.\n"
                 "- answer_key must contain exactly 5 letters from A to D."
             )
         if slot == 2:
             style_note = (
-                "- CET4 Passage Two should usually be viewpoint-driven social-life, campus, or consumer-trend material, with question wording around trend/reason/reaction/suggestion.\n"
-                "- Passage flow should usually move through phenomenon, reasons or examples, and the author's suggestion or judgment.\n"
+                "- This set should emulate one passage inside Section C, specifically Passage Two.\n"
+                "- CET4 Passage Two in real papers is often slightly more interpretive or opinion-colored than Passage One, but the theme may still range across culture, psychology, work, technology, food, education, or society.\n"
                 if level is Level.CET4
-                else "- CET6 Passage Two should usually be viewpoint-driven psychology, ethics, or technology-reflection material, with question wording around infer/cite/imply/attitude.\n"
-                "- Passage flow should usually move through a modern problem or assumption, critique or citation, and broader implication or stance.\n"
+                else "- This set should emulate one passage inside Section C, specifically Passage Two.\n"
+                "- CET6 Passage Two in real papers often carries stronger reflection, argument, or value judgment than Passage One, but should still feel like an adapted original article rather than a classroom essay.\n"
             )
             return (
                 "- questions must contain exactly 5 items.\n"
                 "- each question must contain exactly 4 options labeled A. to D.\n"
                 "- question stems may be direct questions or unfinished statements.\n"
                 f"{style_note}"
-                "- prioritize inference, example/citation purpose, and viewpoint/attitude over pure fact lookup.\n"
-                "- At least 2 items should feel like reason/inference/purpose/attitude questions rather than pure sentence-level fact retrieval.\n"
+                "- prioritize official CET-style questions such as what can be inferred, why the author mentions something, what the passage implies, what is suggested, and what the author's attitude is when natural.\n"
+                "- keep the question order close to the passage flow.\n"
                 "- do not force all five skill types to appear exactly once; inference and detail may carry more weight than attitude or vocabulary.\n"
                 "- answer_key must contain exactly 5 letters from A to D."
             )
@@ -2273,6 +2406,7 @@ class SubjectiveEvaluationPipeline:
                 parameters_schema=self._tool_schema(question_set),
                 temperature=0.18,
                 max_tokens=2600,
+                request_timeout=self._request_timeout(question_set, response_text),
             )
             try:
                 return self._normalize_evaluation_payload(payload, question_set)
@@ -2451,6 +2585,13 @@ class SubjectiveEvaluationPipeline:
             ],
             "additionalProperties": False,
         }
+
+    @staticmethod
+    def _request_timeout(question_set: QuestionSet, response_text: str) -> float:
+        response_words = len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", response_text))
+        if question_set.question_type is QuestionType.TRANSLATION:
+            return 180.0 if response_words < 120 else 210.0
+        return 170.0 if response_words < 160 else 210.0
 
     def _normalize_evaluation_payload(
         self,
