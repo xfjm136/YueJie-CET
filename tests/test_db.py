@@ -141,6 +141,45 @@ class FakeSubjectiveEvaluator:
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_overview_stats_include_normalized_home_metrics(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+
+            banked = build_question_set()
+            long_reading = build_question_set()
+            long_reading.id = "qs_long"
+            long_reading.question_type = QuestionType.LONG_READING
+            long_reading.title = "Long Demo"
+            long_reading.topic = "long demo"
+
+            db.save_question_set(banked)
+            db.save_question_set(long_reading)
+
+            attempt_service = AttemptService(db, WeaknessService(db))
+            started_at = datetime.now(timezone.utc) - timedelta(minutes=40)
+            attempt_service.submit_attempt(
+                question_set=banked,
+                answers={"q1": "A"},
+                started_at=started_at,
+                is_history_retry=False,
+            )
+            attempt_service.submit_attempt(
+                question_set=long_reading,
+                answers={"q1": "A"},
+                started_at=started_at + timedelta(minutes=5),
+                is_history_retry=False,
+            )
+
+            overview = db.overview_stats()
+
+            self.assertIn("recent_performance_percent", overview)
+            self.assertIn("recent_pace_percent", overview)
+            self.assertEqual(len(overview["recent_performance_series"]), 2)
+            self.assertEqual(len(overview["recent_pace_series"]), 2)
+            self.assertLessEqual(max(overview["recent_pace_series"]), 100.0)
+            self.assertNotEqual(overview["recent_pace_series"][0], overview["recent_duration_series"][0])
+
     def test_database_round_trip(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             db = Database(Path(tmp_dir) / "test.db")

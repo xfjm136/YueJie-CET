@@ -13,6 +13,28 @@ from app.domain.schemas import AttemptResult, QuestionSet, VocabularyItem
 
 
 class Database:
+    HOME_ACCURACY_TARGETS: dict[tuple[str, str, int | None], float] = {
+        ("cet4", "banked_cloze", None): 0.78,
+        ("cet4", "long_reading", None): 0.72,
+        ("cet4", "careful_reading", 1): 0.75,
+        ("cet4", "careful_reading", 2): 0.70,
+        ("cet4", "writing", None): 0.72,
+        ("cet4", "translation", None): 0.72,
+        ("cet6", "banked_cloze", None): 0.72,
+        ("cet6", "long_reading", None): 0.68,
+        ("cet6", "careful_reading", 1): 0.70,
+        ("cet6", "careful_reading", 2): 0.64,
+        ("cet6", "writing", None): 0.68,
+        ("cet6", "translation", None): 0.68,
+    }
+    QUESTION_TIME_TARGETS: dict[str, int] = {
+        "banked_cloze": 8 * 60,
+        "long_reading": 15 * 60,
+        "careful_reading": 12 * 60,
+        "writing": 30 * 60,
+        "translation": 30 * 60,
+    }
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -491,11 +513,25 @@ class Database:
         recent = history[:5]
         avg_accuracy = round(sum(row["accuracy"] for row in recent) / len(recent), 4) if recent else 0.0
         avg_duration = int(sum(row["duration_seconds"] for row in recent) / len(recent)) if recent else 0
+        avg_performance = (
+            round(sum(self._home_accuracy_index(row) for row in recent) / len(recent), 2)
+            if recent
+            else 0.0
+        )
+        avg_pace = (
+            round(sum(self._home_pace_index(row) for row in recent) / len(recent), 2)
+            if recent
+            else 0.0
+        )
         type_counter = Counter(row["question_type"] for row in history)
         most_common_type = type_counter.most_common(1)[0][0] if type_counter else None
         trend_window = history[:200]
         accuracy_series = [round(row["accuracy"] * 100, 2) for row in reversed(trend_window)]
         duration_series = [int(row["duration_seconds"]) for row in reversed(trend_window)]
+        performance_series = [
+            round(self._home_accuracy_index(row), 2) for row in reversed(trend_window)
+        ]
+        pace_series = [round(self._home_pace_index(row), 2) for row in reversed(trend_window)]
         return {
             "total_attempts": total_attempts,
             "total_cet4": total_cet4,
@@ -504,6 +540,10 @@ class Database:
             "recent_duration_seconds": avg_duration,
             "recent_accuracy_series": accuracy_series,
             "recent_duration_series": duration_series,
+            "recent_performance_percent": avg_performance,
+            "recent_pace_percent": avg_pace,
+            "recent_performance_series": performance_series,
+            "recent_pace_series": pace_series,
             "most_common_type": most_common_type,
             "latest_weakness_updated_at": self.latest_weakness_updated_at(),
         }
@@ -590,3 +630,39 @@ class Database:
                     (level.value, question_type.value, slot, limit),
                 ).fetchall()
         return [str(row["topic"]).strip().lower() for row in rows if str(row["topic"]).strip()]
+
+    @classmethod
+    def _accuracy_target_ratio(
+        cls,
+        level: str,
+        question_type: str,
+        slot: int | None,
+    ) -> float:
+        return cls.HOME_ACCURACY_TARGETS.get(
+            (level, question_type, slot),
+            cls.HOME_ACCURACY_TARGETS.get((level, question_type, None), 0.70),
+        )
+
+    @classmethod
+    def _recommended_duration_seconds(cls, question_type: str) -> int:
+        return cls.QUESTION_TIME_TARGETS.get(question_type, 12 * 60)
+
+    @classmethod
+    def _home_accuracy_index(cls, row: dict[str, Any]) -> float:
+        target = cls._accuracy_target_ratio(
+            str(row.get("level", "")).strip(),
+            str(row.get("question_type", "")).strip(),
+            row.get("slot"),
+        )
+        accuracy = max(0.0, float(row.get("accuracy", 0.0)))
+        if target <= 0.0:
+            return 0.0
+        return min((accuracy / target) * 100.0, 130.0)
+
+    @classmethod
+    def _home_pace_index(cls, row: dict[str, Any]) -> float:
+        actual = max(0, int(row.get("duration_seconds", 0)))
+        target = cls._recommended_duration_seconds(str(row.get("question_type", "")).strip())
+        if actual <= 0 or target <= 0:
+            return 0.0
+        return round(min(actual, target) / max(actual, target) * 100.0, 2)

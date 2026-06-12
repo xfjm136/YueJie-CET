@@ -22,12 +22,15 @@ class StatsService:
             else "暂无"
         )
         updated = stats["latest_weakness_updated_at"] or "暂无"
-        accuracy = f"{stats['recent_accuracy'] * 100:.1f}%"
+        performance = f"{stats['recent_performance_percent']:.1f}"
+        raw_accuracy = f"{stats['recent_accuracy'] * 100:.1f}%"
+        pace = f"{stats['recent_pace_percent']:.1f}"
         return (
             f"总刷题数：{stats['total_attempts']}\n"
             f"四级题数：{stats['total_cet4']}    六级题数：{stats['total_cet6']}\n"
-            f"最近 5 次正确率：{accuracy}\n"
-            f"最近 5 次平均时间：{self.seconds_to_text(stats['recent_duration_seconds'])}\n"
+            f"最近 5 次表现指数：{performance}\n"
+            f"最近 5 次节奏匹配：{pace}\n"
+            f"原始均值：正确率 {raw_accuracy} / 用时 {self.seconds_to_text(stats['recent_duration_seconds'])}\n"
             f"当前最常练题型：{common_type}\n"
             f"最近一次薄弱项更新时间：{updated}"
         )
@@ -43,6 +46,10 @@ class StatsService:
             **stats,
             "recent_accuracy_percent": round(stats["recent_accuracy"] * 100, 1),
             "recent_duration_text": self.seconds_to_text(stats["recent_duration_seconds"]),
+            "recent_performance_percent": round(stats["recent_performance_percent"], 1),
+            "recent_pace_percent": round(stats["recent_pace_percent"], 1),
+            "raw_recent_accuracy_percent": round(stats["recent_accuracy"] * 100, 1),
+            "raw_recent_duration_text": self.seconds_to_text(stats["recent_duration_seconds"]),
             "most_common_type_label": common_type,
             "cet4_ratio": stats["total_cet4"] / stats["total_attempts"]
             if stats["total_attempts"]

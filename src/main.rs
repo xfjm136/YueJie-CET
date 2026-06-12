@@ -124,6 +124,12 @@ struct OverviewData {
     recent_duration_text: String,
     recent_accuracy_series: Vec<f64>,
     recent_duration_series: Vec<i64>,
+    recent_performance_percent: f64,
+    recent_pace_percent: f64,
+    recent_performance_series: Vec<f64>,
+    recent_pace_series: Vec<f64>,
+    raw_recent_accuracy_percent: f64,
+    raw_recent_duration_text: String,
     most_common_type_label: String,
     latest_weakness_updated_at: Option<String>,
     cet4_ratio: f64,
@@ -584,6 +590,7 @@ enum GenerationMessage {
 
 #[derive(Clone, Copy)]
 enum TrendMetric {
+    Index,
     Percentage,
     Duration,
 }
@@ -2695,16 +2702,12 @@ impl YueJieRustApp {
         let total_attempts = self.overview.total_attempts;
         let total_cet4 = self.overview.total_cet4;
         let total_cet6 = self.overview.total_cet6;
-        let recent_accuracy_percent = self.overview.recent_accuracy_percent;
-        let recent_duration_text = self.overview.recent_duration_text.clone();
-        let recent_duration_ratio = (self
-            .overview
-            .recent_duration_series
-            .last()
-            .copied()
-            .unwrap_or(0) as f64
-            / 2400.0)
-            .min(1.0);
+        let recent_performance_percent = self.overview.recent_performance_percent;
+        let recent_pace_percent = self.overview.recent_pace_percent;
+        let raw_recent_accuracy_percent = self.overview.raw_recent_accuracy_percent;
+        let raw_recent_duration_text = self.overview.raw_recent_duration_text.clone();
+        let recent_performance_ratio = (recent_performance_percent / 100.0).min(1.0);
+        let recent_pace_ratio = (recent_pace_percent / 100.0).min(1.0);
         let most_common_type_label = self.overview.most_common_type_label.clone();
         let latest_weakness_text = self
             .overview
@@ -2712,13 +2715,8 @@ impl YueJieRustApp {
             .clone()
             .map(|value| format_iso_brief(&value))
             .unwrap_or_else(|| "薄弱项暂无更新".to_string());
-        let accuracy_series = self.overview.recent_accuracy_series.clone();
-        let duration_series: Vec<f64> = self
-            .overview
-            .recent_duration_series
-            .iter()
-            .map(|value| (*value).max(0) as f64)
-            .collect();
+        let performance_series = self.overview.recent_performance_series.clone();
+        let pace_series = self.overview.recent_pace_series.clone();
         let outer = centered_rect(95, 94, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -2764,17 +2762,18 @@ impl YueJieRustApp {
             Line::from(Span::styled("欢迎回来", title_style(palette))),
             Line::from(""),
             Line::from(format!(
-                "最近 5 次正确率 {}，当前状态：{}。",
-                format!("{:.1}%", recent_accuracy_percent),
-                accuracy_band(recent_accuracy_percent / 100.0)
+                "最近 5 次表现指数 {:.1}，节奏匹配 {:.1}，当前状态：{}。",
+                recent_performance_percent,
+                recent_pace_percent,
+                accuracy_band(recent_performance_ratio)
             )),
             Line::from(format!(
                 "训练建议：{}",
                 if total_attempts == 0 {
                     "先从四级选词填空开始，熟悉界面和出题风格。"
-                } else if recent_accuracy_percent < 60.0 {
+                } else if recent_performance_percent < 75.0 {
                     "先继续当前题型，优先看解析和词汇，拉稳基础正确率。"
-                } else if recent_accuracy_percent < 80.0 {
+                } else if recent_performance_percent < 100.0 {
                     "可以保持当前节奏，适度加入长篇阅读强化定位速度。"
                 } else {
                     "状态不错，可以切到更高难度或继续做同题型巩固稳定性。"
@@ -2797,7 +2796,11 @@ impl YueJieRustApp {
             Paragraph::new(Text::from(vec![
                 Line::from(format!("累计刷题：{} 题", total_attempts)),
                 Line::from(format!("最常练题型：{}", most_common_type_label)),
-                Line::from(format!("最近平均用时：{}", recent_duration_text)),
+                Line::from(format!(
+                    "原始均值：{} / {}",
+                    format!("{:.1}%", raw_recent_accuracy_percent),
+                    raw_recent_duration_text
+                )),
             ]))
             .wrap(Wrap { trim: false })
             .block(simple_block("速览", palette)),
@@ -2836,19 +2839,19 @@ impl YueJieRustApp {
             frame,
             stat_chunks[1],
             palette,
-            "最近正确率",
-            &format!("{:.1}%", recent_accuracy_percent),
-            accuracy_band(recent_accuracy_percent / 100.0),
-            Some(recent_accuracy_percent / 100.0),
+            "表现指数",
+            &format!("{:.1}", recent_performance_percent),
+            &format!("原始正确率 {:.1}%", raw_recent_accuracy_percent),
+            Some(recent_performance_ratio),
         );
         self.draw_metric_box(
             frame,
             stat_chunks[2],
             palette,
-            "平均用时",
-            &recent_duration_text,
-            "近 5 次均值",
-            Some(recent_duration_ratio),
+            "节奏匹配",
+            &format!("{:.1}", recent_pace_percent),
+            &format!("原始均时 {}", raw_recent_duration_text),
+            Some(recent_pace_ratio),
         );
         self.draw_metric_box(
             frame,
@@ -2884,21 +2887,21 @@ impl YueJieRustApp {
             frame,
             trend_rows[0],
             palette,
-            "正确率走势",
-            &accuracy_series,
+            "表现指数走势",
+            &performance_series,
             palette.success,
-            TrendMetric::Percentage,
-            Some(100.0),
+            TrendMetric::Index,
+            Some(130.0),
         );
         self.draw_line_trend_card(
             frame,
             trend_rows[1],
             palette,
-            "用时走势",
-            &duration_series,
+            "节奏匹配走势",
+            &pace_series,
             palette.warning,
-            TrendMetric::Duration,
-            None,
+            TrendMetric::Index,
+            Some(100.0),
         );
         frame.render_widget(
             Paragraph::new(Text::from(vec![
@@ -2974,7 +2977,7 @@ impl YueJieRustApp {
                 )),
                 Line::from(format!(
                     "当前状态：{}",
-                    accuracy_band(recent_accuracy_percent / 100.0)
+                    accuracy_band(recent_performance_ratio)
                 )),
             ]))
             .wrap(Wrap { trim: false })
@@ -6783,6 +6786,7 @@ fn mini_ratio_bar(ratio: f64, width: usize) -> String {
 
 fn trend_value_text(metric: TrendMetric, value: f64) -> String {
     match metric {
+        TrendMetric::Index => format!("{value:.0}"),
         TrendMetric::Percentage => format!("{value:.1}%"),
         TrendMetric::Duration => seconds_to_text(value.round() as i64),
     }
@@ -6798,6 +6802,7 @@ fn trend_range_text(metric: TrendMetric, min_value: f64, max_value: f64) -> Stri
 
 fn trend_delta_text(metric: TrendMetric, delta: f64) -> String {
     match metric {
+        TrendMetric::Index => format!("{:+.0}", delta),
         TrendMetric::Percentage => format!("{:+.1}%", delta),
         TrendMetric::Duration => {
             let sign = if delta >= 0.0 { "+" } else { "-" };
@@ -6812,6 +6817,8 @@ fn trend_delta_visual(metric: TrendMetric, delta: f64, palette: Palette) -> (&'s
         return ("→", palette.muted);
     }
     match metric {
+        TrendMetric::Index if delta > 0.0 => ("↑", palette.success),
+        TrendMetric::Index => ("↓", palette.warning),
         TrendMetric::Percentage if delta > 0.0 => ("↑", palette.success),
         TrendMetric::Percentage => ("↓", palette.warning),
         TrendMetric::Duration if delta < 0.0 => ("↓", palette.success),
@@ -7253,8 +7260,10 @@ mod tests {
 
     #[test]
     fn trend_helpers_format_percentage_and_duration_as_expected() {
+        assert_eq!(trend_value_text(TrendMetric::Index, 92.4), "92");
         assert_eq!(trend_value_text(TrendMetric::Percentage, 83.25), "83.2%");
         assert_eq!(trend_value_text(TrendMetric::Duration, 125.0), "02:05");
+        assert_eq!(trend_delta_text(TrendMetric::Index, -7.0), "-7");
         assert_eq!(trend_delta_text(TrendMetric::Percentage, 4.2), "+4.2%");
         assert_eq!(trend_delta_text(TrendMetric::Duration, -18.0), "-00:18");
     }
