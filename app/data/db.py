@@ -13,6 +13,8 @@ from app.domain.schemas import AttemptResult, QuestionSet, VocabularyItem
 
 
 class Database:
+    HOME_ACCURACY_BASELINE_INDEX = 80.0
+    HOME_PACE_DEVIATION_WEIGHT = 70.0
     HOME_ACCURACY_TARGETS: dict[tuple[str, str, int | None], float] = {
         ("cet4", "banked_cloze", None): 0.78,
         ("cet4", "long_reading", None): 0.72,
@@ -657,9 +659,15 @@ class Database:
         accuracy = max(0.0, float(row.get("accuracy", 0.0)))
         if target <= 0.0:
             return 0.0
-        # Home-page normalized metrics should stay within 0-100 so that
-        # the displayed "index" and progress visuals remain consistent.
-        return min((accuracy / target) * 100.0, 100.0)
+        baseline = cls.HOME_ACCURACY_BASELINE_INDEX
+        # Meeting a question type's usual target should feel "solid" rather than
+        # instantly maxed out. Reserve the top end of the scale for genuinely
+        # high raw accuracy, while still normalizing across question types.
+        if accuracy <= target:
+            return round((accuracy / target) * baseline, 2)
+        headroom = max(1.0 - target, 1e-6)
+        boosted = baseline + ((accuracy - target) / headroom) * (100.0 - baseline)
+        return round(min(boosted, 100.0), 2)
 
     @classmethod
     def _home_pace_index(cls, row: dict[str, Any]) -> float:
@@ -667,4 +675,7 @@ class Database:
         target = cls._recommended_duration_seconds(str(row.get("question_type", "")).strip())
         if actual <= 0 or target <= 0:
             return 0.0
-        return round(min(actual, target) / max(actual, target) * 100.0, 2)
+        deviation = abs(actual - target) / target
+        # A small deviation from the recommended pace should still look healthy,
+        # but very rushed or very拖沓 sessions should visibly fall away.
+        return round(max(0.0, 100.0 - deviation * cls.HOME_PACE_DEVIATION_WEIGHT), 2)

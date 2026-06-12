@@ -180,7 +180,29 @@ class DatabaseTests(unittest.TestCase):
             self.assertLessEqual(overview["recent_performance_percent"], 100.0)
             self.assertLessEqual(max(overview["recent_performance_series"]), 100.0)
             self.assertLessEqual(max(overview["recent_pace_series"]), 100.0)
-            self.assertNotEqual(overview["recent_pace_series"][0], overview["recent_duration_series"][0])
+            self.assertNotEqual(
+                overview["recent_pace_series"][0],
+                overview["recent_duration_series"][0],
+            )
+
+    def test_home_accuracy_index_does_not_hit_full_score_at_target_line(self) -> None:
+        row = {
+            "level": "cet4",
+            "question_type": "careful_reading",
+            "slot": 2,
+            "accuracy": 0.70,
+        }
+        index_value = Database._home_accuracy_index(row)
+        self.assertGreaterEqual(index_value, 79.0)
+        self.assertLess(index_value, 90.0)
+
+    def test_home_pace_index_penalizes_large_deviation_but_not_small_deviation_too_harshly(self) -> None:
+        close_row = {"question_type": "careful_reading", "duration_seconds": 13 * 60}
+        far_row = {"question_type": "careful_reading", "duration_seconds": 24 * 60}
+        close_value = Database._home_pace_index(close_row)
+        far_value = Database._home_pace_index(far_row)
+        self.assertGreater(close_value, 90.0)
+        self.assertLess(far_value, 40.0)
 
     def test_database_round_trip(self) -> None:
         with TemporaryDirectory() as tmp_dir:

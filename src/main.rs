@@ -2714,6 +2714,7 @@ impl YueJieRustApp {
         let recent_pace_percent = self.overview.recent_pace_percent;
         let raw_recent_accuracy_percent = self.overview.raw_recent_accuracy_percent;
         let raw_recent_duration_text = self.overview.raw_recent_duration_text.clone();
+        let raw_accuracy_ratio = (raw_recent_accuracy_percent / 100.0).min(1.0);
         let recent_performance_ratio = (recent_performance_percent / 100.0).min(1.0);
         let recent_pace_ratio = (recent_pace_percent / 100.0).min(1.0);
         let most_common_type_label = self.overview.most_common_type_label.clone();
@@ -2779,9 +2780,9 @@ impl YueJieRustApp {
                 "训练建议：{}",
                 if total_attempts == 0 {
                     "先从四级选词填空开始，熟悉界面和出题风格。"
-                } else if recent_performance_percent < 75.0 {
+                } else if recent_performance_percent < 70.0 {
                     "先继续当前题型，优先看解析和词汇，拉稳基础正确率。"
-                } else if recent_performance_percent < 100.0 {
+                } else if recent_performance_percent < 85.0 {
                     "可以保持当前节奏，适度加入长篇阅读强化定位速度。"
                 } else {
                     "状态不错，可以切到更高难度或继续做同题型巩固稳定性。"
@@ -2853,7 +2854,7 @@ impl YueJieRustApp {
                 "原始正确率 {:.1}% · 已按题型难度归一",
                 raw_recent_accuracy_percent
             ),
-            Some(recent_performance_ratio),
+            Some(raw_accuracy_ratio),
         );
         self.draw_metric_box(
             frame,
