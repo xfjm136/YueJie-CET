@@ -1792,6 +1792,7 @@ struct MockExamSession {
     paused_wait_seconds: i64,
     waiting_started_at: Option<Instant>,
     writing_locked: bool,
+    writing_locked_at_exam_seconds: Option<i64>,
     active_section: TypeChoice,
     sections: HashMap<String, MockExamSectionState>,
     pending_types: Vec<TypeChoice>,
@@ -1825,6 +1826,7 @@ impl MockExamSession {
             paused_wait_seconds: 0,
             waiting_started_at: None,
             writing_locked: false,
+            writing_locked_at_exam_seconds: None,
             active_section: TypeChoice::Writing,
             sections,
             pending_types: vec![
@@ -1893,7 +1895,12 @@ impl MockExamSession {
     }
 
     fn total_remaining_seconds(&self) -> i64 {
-        (Self::TOTAL_SECONDS - self.elapsed_exam_seconds()).max(0)
+        if let Some(locked_at) = self.writing_locked_at_exam_seconds {
+            let post_writing_elapsed = (self.elapsed_exam_seconds() - locked_at).max(0);
+            (Self::TOTAL_SECONDS - Self::WRITING_SECONDS - post_writing_elapsed).max(0)
+        } else {
+            Self::TOTAL_SECONDS - Self::WRITING_SECONDS + self.writing_remaining_seconds()
+        }
     }
 
     fn is_waiting(&self) -> bool {
@@ -1964,6 +1971,9 @@ impl MockExamSession {
 
     fn lock_writing(&mut self) {
         self.writing_locked = true;
+        if self.writing_locked_at_exam_seconds.is_none() {
+            self.writing_locked_at_exam_seconds = Some(self.elapsed_exam_seconds());
+        }
         if let Some(section) = self.section_mut(TypeChoice::Writing) {
             section.locked = true;
         }
@@ -5081,7 +5091,7 @@ impl YueJieRustApp {
             practice
         };
         let root = centered_rect(98, 94, area);
-        let header_height = if self.mock_exam_session.is_some() { 7 } else { 5 };
+        let header_height = if self.mock_exam_session.is_some() { 10 } else { 5 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(header_height), Constraint::Min(20)])
@@ -5176,7 +5186,7 @@ impl YueJieRustApp {
         let inner = simple_block("题型切换", palette).inner(parts[1]);
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(3)])
+            .constraints([Constraint::Length(4), Constraint::Length(4)])
             .split(inner);
         let row1 = Layout::default()
             .direction(Direction::Horizontal)
@@ -5205,20 +5215,21 @@ impl YueJieRustApp {
         for (type_choice, rect) in buttons {
             let ready = session.is_ready(type_choice);
             let locked = session.is_section_locked(type_choice);
-            let title = if session.active_section == type_choice {
-                format!("●{}", short_type_label(type_choice))
+            let label = short_type_label(type_choice);
+            let status = if session.active_section == type_choice {
+                "当前作答"
             } else if locked {
-                format!("{}锁", short_type_label(type_choice))
+                "已锁定"
             } else if ready {
-                format!("{}做", short_type_label(type_choice))
+                "可作答"
             } else {
-                format!("{}备", short_type_label(type_choice))
+                "准备中"
             };
-            self.draw_action_button(
+            self.draw_action_button_multiline(
                 frame,
                 rect,
                 palette,
-                &title,
+                &[label, status],
                 session.active_section == type_choice,
                 Action::MockExamSelectSection(type_choice),
             );
@@ -8766,6 +8777,41 @@ impl YueJieRustApp {
         self.click_areas.push(ClickArea { rect: area, action });
     }
 
+    fn draw_action_button_multiline(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: Palette,
+        lines: &[&str],
+        selected: bool,
+        action: Action,
+    ) {
+        let style = if selected {
+            interactive_selected_style(palette)
+        } else {
+            interactive_idle_style(palette)
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(interactive_border_style(palette, selected))
+            .style(style);
+        let text = Paragraph::new(
+            Text::from(
+                lines
+                    .iter()
+                    .map(|line| Line::from((*line).to_string()))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: false })
+        .style(style)
+        .block(block);
+        frame.render_widget(text, area);
+        self.click_areas.push(ClickArea { rect: area, action });
+    }
+
     fn draw_toggle_box(
         &mut self,
         frame: &mut Frame,
@@ -10147,5 +10193,58 @@ mod tests {
         assert!(!is_generation_heartbeat(
             "题目已通过校验，正在保存题集与词汇。"
         ));
+    }
+
+    fn test_mock_question_set() -> QuestionSet {
+        QuestionSet {
+            id: "mock-writing".to_string(),
+            level: "cet4".to_string(),
+            question_type: "writing".to_string(),
+            title: "Mock Writing".to_string(),
+            topic: "campus learning".to_string(),
+            passage: Passage {
+                title: "Mock Writing".to_string(),
+                paragraphs: vec!["Write an essay about campus learning.".to_string()],
+            },
+            questions: vec![],
+            answer_key: vec![],
+            analysis: AnalysisReport {
+                overall_strategy: String::new(),
+                overall_summary: String::new(),
+                item_explanations: vec![],
+                test_tips: vec![],
+            },
+            vocabulary: vec![],
+            shared_options: vec![],
+            task_prompt: "Write at least 120 words.".to_string(),
+            reference_answer: String::new(),
+            rubric_focus: vec![],
+            min_response_words: 120,
+            max_response_words: 180,
+            slot: None,
+            word_count: 0,
+            created_at: String::new(),
+            generator_model: "test".to_string(),
+            source_type: "ai".to_string(),
+        }
+    }
+
+    #[test]
+    fn mock_exam_total_remaining_uses_writing_remaining_before_lock() {
+        let mut session = MockExamSession::new(LevelChoice::Cet4, test_mock_question_set());
+        session.started_instant = Instant::now() - Duration::from_secs(15 * 60);
+        if let Some(section) = session.section_mut(TypeChoice::Writing) {
+            section.practice.started_instant = Instant::now() - Duration::from_secs(15 * 60);
+        }
+        assert_eq!(session.writing_remaining_seconds(), 15 * 60);
+        assert_eq!(session.total_remaining_seconds(), 85 * 60);
+    }
+
+    #[test]
+    fn mock_exam_total_remaining_resets_to_shared_seventy_minutes_after_writing_lock() {
+        let mut session = MockExamSession::new(LevelChoice::Cet4, test_mock_question_set());
+        session.started_instant = Instant::now() - Duration::from_secs(12 * 60);
+        session.lock_writing();
+        assert_eq!(session.total_remaining_seconds(), 70 * 60);
     }
 }
