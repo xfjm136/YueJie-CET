@@ -3757,11 +3757,23 @@ impl YueJieRustApp {
             return Ok(());
         };
         if section.practice.question_set.questions.is_empty() {
-            if section.practice.response_text().trim().is_empty() {
-                self.status_line = String::from("当前作答区为空，请先输入内容后再提交。");
+            if section.practice.response_text().trim().is_empty()
+                && !section.practice.submit_confirm_pending
+            {
+                section.practice.submit_confirm_pending = true;
+                self.status_line = if active_type == TypeChoice::Writing {
+                    String::from(
+                        "当前作文为空白；再按一次 F9 / Ctrl+S / 提交按钮，将按空白作文提交。",
+                    )
+                } else {
+                    String::from(
+                        "当前翻译为空白；再按一次 F9 / Ctrl+S / 保存按钮，将按空白作答保存该部分。",
+                    )
+                };
                 return Ok(());
             }
             if active_type == TypeChoice::Writing {
+                section.practice.submit_confirm_pending = false;
                 section.locked = true;
                 session.lock_writing();
                 if session.all_sections_ready() {
@@ -4341,11 +4353,11 @@ impl YueJieRustApp {
         );
 
         let menu_items = [
-            ("开始刷题", "进入等级与题型选择", Action::HomeMenu(0)),
-            ("模拟四六级考试", "先完成作文，其余部分后台生成", Action::HomeMenu(1)),
-            ("刷题历史", "普通刷题 / 模拟四六级考试历史", Action::HomeMenu(2)),
-            ("能力与词汇", "普通弱势 / 模拟四六级考试弱势 / 词汇表", Action::HomeMenu(3)),
-            ("设置", "主题、背景与配色", Action::HomeMenu(4)),
+            ("开始刷题", "等级与题型", Action::HomeMenu(0)),
+            ("模拟四六级考试", "作文开局整套练", Action::HomeMenu(1)),
+            ("刷题历史", "历史与复盘", Action::HomeMenu(2)),
+            ("能力与词汇", "弱势与词汇", Action::HomeMenu(3)),
+            ("设置", "主题与配色", Action::HomeMenu(4)),
             ("退出", "安全退出程序", Action::HomeMenu(5)),
         ];
         frame.render_widget(simple_block("快速入口", palette), bottom[1]);
@@ -4466,9 +4478,9 @@ impl YueJieRustApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(11),
-                Constraint::Length(11),
-                Constraint::Length(11),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(8),
                 Constraint::Length(1),
             ])
             .split(outer);
@@ -5153,13 +5165,13 @@ impl YueJieRustApp {
             let ready = session.is_ready(type_choice);
             let locked = session.is_section_locked(type_choice);
             let title = if session.active_section == type_choice {
-                format!("● {}", type_choice.label())
+                format!("●{}", short_type_label(type_choice))
             } else if locked {
-                format!("{} 已锁定", type_choice.label())
+                format!("{}锁", short_type_label(type_choice))
             } else if ready {
-                format!("{} 可做", type_choice.label())
+                format!("{}做", short_type_label(type_choice))
             } else {
-                format!("{} 准备中", type_choice.label())
+                format!("{}备", short_type_label(type_choice))
             };
             self.draw_action_button(
                 frame,
@@ -9117,6 +9129,17 @@ fn format_mock_exam_section_key(key: &str) -> &'static str {
         "careful_reading_1" => "仔细阅读 1",
         "careful_reading_2" => "仔细阅读 2",
         _ => "题目部分",
+    }
+}
+
+fn short_type_label(type_choice: TypeChoice) -> &'static str {
+    match type_choice {
+        TypeChoice::Writing => "作文",
+        TypeChoice::Translation => "翻译",
+        TypeChoice::BankedCloze => "选填",
+        TypeChoice::LongReading => "长阅",
+        TypeChoice::Careful1 => "细读1",
+        TypeChoice::Careful2 => "细读2",
     }
 }
 
