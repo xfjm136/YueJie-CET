@@ -401,3 +401,73 @@ class AttemptResult:
             if data.get("created_at")
             else utc_now(),
         )
+
+
+@dataclass
+class MockExamSectionRecord:
+    question_type: QuestionType
+    slot: int | None
+    question_set: QuestionSet
+    answers: dict[str, str]
+    result: AttemptResult
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MockExamSectionRecord":
+        return cls(
+            question_type=QuestionType(data["question_type"]),
+            slot=data.get("slot"),
+            question_set=QuestionSet.from_dict(data["question_set"]),
+            answers={str(key): str(value) for key, value in dict(data.get("answers", {})).items()},
+            result=AttemptResult.from_dict(data["result"]),
+        )
+
+
+@dataclass
+class MockExamRecord:
+    id: str
+    level: Level
+    started_at: datetime
+    submitted_at: datetime
+    duration_seconds: int
+    total_score: float
+    score_breakdown: dict[str, float]
+    summary: str
+    recommendations: list[str]
+    weakness_tags: list[str]
+    sections: list[MockExamSectionRecord] = field(default_factory=list)
+    created_at: datetime = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MockExamRecord":
+        return cls(
+            id=data["id"],
+            level=Level(data["level"]),
+            started_at=datetime.fromisoformat(data["started_at"])
+            if data.get("started_at")
+            else utc_now(),
+            submitted_at=datetime.fromisoformat(data["submitted_at"])
+            if data.get("submitted_at")
+            else utc_now(),
+            duration_seconds=int(data.get("duration_seconds", 0)),
+            total_score=float(data.get("total_score", 0.0)),
+            score_breakdown={
+                str(key): float(value)
+                for key, value in dict(data.get("score_breakdown", {})).items()
+            },
+            summary=data.get("summary", ""),
+            recommendations=list(data.get("recommendations", [])),
+            weakness_tags=list(data.get("weakness_tags", [])),
+            sections=[
+                MockExamSectionRecord.from_dict(item)
+                for item in data.get("sections", [])
+            ],
+            created_at=datetime.fromisoformat(data["created_at"])
+            if data.get("created_at")
+            else utc_now(),
+        )

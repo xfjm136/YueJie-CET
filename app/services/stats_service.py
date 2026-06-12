@@ -122,3 +122,9 @@ class StatsService:
 
     def list_weakness_snapshots(self, limit: int = 20) -> list[dict]:
         return self.db.list_weakness_snapshots(limit=limit)
+
+    def list_mock_exam_history(self, limit: int = 20) -> list[dict]:
+        return self.db.list_mock_exam_history(limit=limit)
+
+    def list_mock_exam_weakness_snapshots(self, limit: int = 20) -> list[dict]:
+        return self.db.list_mock_exam_weakness_snapshots(limit=limit)

@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 
 const MIN_TERMINAL_WIDTH: u16 = 120;
 const MIN_TERMINAL_HEIGHT: u16 = 34;
+const SUBMISSION_AUTO_RETRY_LIMIT: usize = 3;
 
 fn main() -> Result<()> {
     let mut app = YueJieRustApp::new()?;
@@ -110,6 +111,38 @@ struct VocabularyResponse {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct MockExamHistoryResponse {
+    ok: bool,
+    history: Vec<MockExamHistoryEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamReviewResponse {
+    ok: bool,
+    mock_exam: MockExamRecord,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamWeaknessResponse {
+    ok: bool,
+    weakness: Vec<MockExamWeaknessEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamDeletePayload {
+    exam_id: String,
+    level: String,
+    submitted_at: String,
+    total_score: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamDeleteResponse {
+    ok: bool,
+    deleted: MockExamDeletePayload,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct SettingsResponse {
     ok: bool,
     settings: BridgeSettings,
@@ -118,6 +151,7 @@ struct SettingsResponse {
 #[derive(Clone, Debug, Deserialize)]
 struct OverviewData {
     total_attempts: usize,
+    total_mock_exams: usize,
     total_cet4: usize,
     total_cet6: usize,
     recent_accuracy_percent: f64,
@@ -128,6 +162,10 @@ struct OverviewData {
     recent_pace_percent: f64,
     recent_performance_series: Vec<f64>,
     recent_pace_series: Vec<f64>,
+    #[serde(default)]
+    recent_mock_exam_score_series: Vec<f64>,
+    #[serde(default)]
+    recent_mock_exam_pace_series: Vec<f64>,
     raw_recent_accuracy_percent: f64,
     raw_recent_duration_text: String,
     most_common_type_label: String,
@@ -344,6 +382,16 @@ struct HistoryEntry {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct MockExamHistoryEntry {
+    exam_id: String,
+    level: String,
+    started_at: String,
+    submitted_at: String,
+    duration_seconds: i64,
+    total_score: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct WeaknessEntry {
     id: i64,
     level: String,
@@ -351,6 +399,16 @@ struct WeaknessEntry {
     summary: String,
     dimensions_json: String,
     based_on_attempt_count: i64,
+    updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamWeaknessEntry {
+    id: i64,
+    level: String,
+    summary: String,
+    dimensions_json: String,
+    based_on_exam_count: i64,
     updated_at: String,
 }
 
@@ -364,6 +422,31 @@ struct VocabularyEntry {
     frequency_score: i64,
     error_related_score: i64,
     last_seen_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamSectionRecord {
+    question_type: String,
+    slot: Option<i32>,
+    question_set: QuestionSet,
+    answers: HashMap<String, String>,
+    result: AttemptResult,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct MockExamRecord {
+    id: String,
+    level: String,
+    started_at: String,
+    submitted_at: String,
+    duration_seconds: i64,
+    total_score: f64,
+    score_breakdown: HashMap<String, f64>,
+    summary: String,
+    recommendations: Vec<String>,
+    weakness_tags: Vec<String>,
+    sections: Vec<MockExamSectionRecord>,
+    created_at: String,
 }
 
 #[derive(Clone)]
@@ -386,7 +469,29 @@ enum Screen {
     Review,
     Weakness,
     Vocabulary,
+    Insights,
+    MockExamWaiting,
+    MockExamReview,
     Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HomeMode {
+    Practice,
+    MockExam,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryTab {
+    Practice,
+    MockExam,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InsightsTab {
+    PracticeWeakness,
+    MockExamWeakness,
+    Vocabulary,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -547,6 +652,8 @@ enum Action {
     HomeMenu(usize),
     Level(LevelChoice),
     Type(TypeChoice),
+    OpenInsightsTab(usize),
+    OpenHistoryTab(usize),
     RetryGeneration,
     RetrySubmission,
     BackHome,
@@ -562,6 +669,11 @@ enum Action {
     HistoryRedo(usize),
     HistoryDelete(usize),
     HistorySelect(usize),
+    MockExamSelectSection(TypeChoice),
+    MockExamSubmit,
+    MockExamHistoryReview(usize),
+    MockExamHistoryDelete(usize),
+    MockExamHistorySelect(usize),
     SubmitPractice,
     PracticeBack,
     PracticeSelectBlank(usize),
@@ -576,6 +688,7 @@ enum Action {
     TogglePalette,
     WeaknessSelect(usize),
     VocabularySelect(usize),
+    MockWeaknessSelect(usize),
 }
 
 #[derive(Clone)]
@@ -610,6 +723,12 @@ struct GeneratingTask {
     cancel_flag: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GenerationContext {
+    Practice,
+    MockExamBootstrap,
+}
+
 enum SubmissionMessage {
     Progress {
         job_id: u64,
@@ -626,6 +745,54 @@ struct SubmittingTask {
     job_id: u64,
     started_at: Instant,
     receiver: Receiver<SubmissionMessage>,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubmissionContext {
+    Practice,
+    MockExam,
+}
+
+enum MockExamGenerationMessage {
+    Progress {
+        type_choice: TypeChoice,
+        message: String,
+    },
+    Retry {
+        type_choice: TypeChoice,
+        attempt: usize,
+        error: String,
+    },
+    Ready {
+        type_choice: TypeChoice,
+        question_set: QuestionSet,
+    },
+    Finished,
+}
+
+struct MockExamGenerationTask {
+    started_at: Instant,
+    receiver: Receiver<MockExamGenerationMessage>,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+enum MockExamSubmissionMessage {
+    Progress {
+        job_id: u64,
+        phase: String,
+        message: String,
+    },
+    Finished {
+        job_id: u64,
+        result: Result<MockExamRecord, String>,
+    },
+}
+
+struct MockExamSubmittingTask {
+    job_id: u64,
+    started_at: Instant,
+    receiver: Receiver<MockExamSubmissionMessage>,
     cancel_flag: Arc<AtomicBool>,
 }
 
@@ -1120,6 +1287,188 @@ impl BackendBridge {
         }
     }
 
+    fn stream_submit_mock_exam(
+        &self,
+        level: LevelChoice,
+        started_at: &str,
+        duration_seconds: i64,
+        sections: &[Value],
+        job_id: u64,
+        sender: Sender<MockExamSubmissionMessage>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<()> {
+        let payload = json!({
+            "level": level.as_str(),
+            "started_at": started_at,
+            "duration_seconds": duration_seconds,
+            "sections": sections,
+        });
+        let mut command = Command::new(&self.python_bin);
+        command
+            .current_dir(&self.root)
+            .arg("-u")
+            .arg("-m")
+            .arg("app.bridge")
+            .arg("submit-mock-exam-live")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = command
+            .spawn()
+            .context("failed to start live mock exam submit command")?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("failed to open live mock exam submit stdin")?;
+            stdin.write_all(payload.to_string().as_bytes())?;
+        }
+
+        let stdout = child
+            .stdout
+            .take()
+            .context("failed to capture live mock exam submit stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("failed to capture live mock exam submit stderr")?;
+        let (line_tx, line_rx) = mpsc::channel::<Result<String, String>>();
+        let stdout_handle = std::thread::spawn(move || {
+            for raw_line in BufReader::new(stdout).lines() {
+                let _ = line_tx.send(raw_line.map_err(|err| err.to_string()));
+            }
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            let mut stderr_text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut stderr_text);
+            stderr_text
+        });
+
+        let mut saw_terminal_event = false;
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Ok(());
+            }
+
+            match line_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let value: Value = serde_json::from_str(&line).with_context(|| {
+                        format!("failed to parse live mock exam submit output: {}", line)
+                    })?;
+                    match value
+                        .get("event")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                    {
+                        "progress" => {
+                            let phase = value
+                                .get("phase")
+                                .and_then(Value::as_str)
+                                .unwrap_or("progress")
+                                .to_string();
+                            let message = value
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("正在评分整套模拟四六级考试。")
+                                .to_string();
+                            let _ = sender.send(MockExamSubmissionMessage::Progress {
+                                job_id,
+                                phase,
+                                message,
+                            });
+                        }
+                        "result" => {
+                            let record_value = value
+                                .get("mock_exam")
+                                .cloned()
+                                .context("live mock exam submit result missing mock_exam")?;
+                            let record: MockExamRecord = serde_json::from_value(record_value)?;
+                            let _ = sender.send(MockExamSubmissionMessage::Finished {
+                                job_id,
+                                result: Ok(record),
+                            });
+                            saw_terminal_event = true;
+                        }
+                        "error" => {
+                            let error = value
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .unwrap_or("bridge command failed")
+                                .to_string();
+                            let _ = sender.send(MockExamSubmissionMessage::Finished {
+                                job_id,
+                                result: Err(error),
+                            });
+                            saw_terminal_event = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Err(err)) => {
+                    let _ = sender.send(MockExamSubmissionMessage::Finished {
+                        job_id,
+                        result: Err(err),
+                    });
+                    saw_terminal_event = true;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {}
+            }
+
+            if let Some(status) = child.try_wait()? {
+                let _ = stdout_handle.join();
+                let stderr_text = stderr_handle.join().unwrap_or_default();
+                while let Ok(Ok(line)) = line_rx.try_recv() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let value: Value = serde_json::from_str(&line).with_context(|| {
+                        format!("failed to parse live mock exam submit output: {}", line)
+                    })?;
+                    if let Some("result") = value.get("event").and_then(Value::as_str) {
+                        let record_value = value
+                            .get("mock_exam")
+                            .cloned()
+                            .context("live mock exam submit result missing mock_exam")?;
+                        let record: MockExamRecord = serde_json::from_value(record_value)?;
+                        let _ = sender.send(MockExamSubmissionMessage::Finished {
+                            job_id,
+                            result: Ok(record),
+                        });
+                        saw_terminal_event = true;
+                    }
+                }
+                if !saw_terminal_event {
+                    if status.success() {
+                        let _ = sender.send(MockExamSubmissionMessage::Finished {
+                            job_id,
+                            result: Err("模拟四六级考试评分流程提前结束，未收到结果。".to_string()),
+                        });
+                    } else {
+                        let detail = if stderr_text.trim().is_empty() {
+                            "bridge command failed".to_string()
+                        } else {
+                            stderr_text.trim().to_string()
+                        };
+                        let _ = sender.send(MockExamSubmissionMessage::Finished {
+                            job_id,
+                            result: Err(detail),
+                        });
+                    }
+                }
+                return Ok(());
+            }
+        }
+    }
+
     fn history(&self) -> Result<HistoryResponse> {
         let value = self.run_bridge(&["history", "--limit", "30"], None)?;
         Ok(serde_json::from_value(value)?)
@@ -1135,8 +1484,28 @@ impl BackendBridge {
         Ok(serde_json::from_value(value)?)
     }
 
+    fn mock_exam_history(&self) -> Result<MockExamHistoryResponse> {
+        let value = self.run_bridge(&["mock-exam-history", "--limit", "30"], None)?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    fn mock_exam_review(&self, exam_id: &str) -> Result<MockExamReviewResponse> {
+        let value = self.run_bridge(&["mock-exam-review", "--exam-id", exam_id], None)?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    fn delete_mock_exam(&self, exam_id: &str) -> Result<MockExamDeleteResponse> {
+        let value = self.run_bridge(&["mock-exam-delete", "--exam-id", exam_id], None)?;
+        Ok(serde_json::from_value(value)?)
+    }
+
     fn weakness(&self) -> Result<WeaknessResponse> {
         let value = self.run_bridge(&["weakness", "--limit", "20"], None)?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    fn mock_exam_weakness(&self) -> Result<MockExamWeaknessResponse> {
+        let value = self.run_bridge(&["mock-exam-weakness", "--limit", "20"], None)?;
         Ok(serde_json::from_value(value)?)
     }
 
@@ -1402,6 +1771,234 @@ impl PracticeState {
     }
 }
 
+#[derive(Clone)]
+struct MockExamSectionState {
+    type_choice: TypeChoice,
+    practice: PracticeState,
+    locked: bool,
+    elapsed_seconds: i64,
+    active_since: Option<Instant>,
+}
+
+#[derive(Clone)]
+struct MockExamSession {
+    level: LevelChoice,
+    started_at_iso: String,
+    started_instant: Instant,
+    paused_wait_seconds: i64,
+    waiting_started_at: Option<Instant>,
+    writing_locked: bool,
+    active_section: TypeChoice,
+    sections: HashMap<String, MockExamSectionState>,
+    pending_types: Vec<TypeChoice>,
+    failed_types: Vec<TypeChoice>,
+    writing_force_submitted: bool,
+    final_force_submitted: bool,
+}
+
+impl MockExamSession {
+    const TOTAL_SECONDS: i64 = 100 * 60;
+    const WRITING_SECONDS: i64 = 30 * 60;
+
+    fn new(level: LevelChoice, writing_question_set: QuestionSet) -> Self {
+        let started_at_iso = Local::now().to_rfc3339();
+        let started_instant = Instant::now();
+        let mut sections = HashMap::new();
+        sections.insert(
+            Self::key_for(TypeChoice::Writing).to_string(),
+            MockExamSectionState {
+                type_choice: TypeChoice::Writing,
+                practice: PracticeState::new(writing_question_set, false),
+                locked: false,
+                elapsed_seconds: 0,
+                active_since: Some(Instant::now()),
+            },
+        );
+        Self {
+            level,
+            started_at_iso,
+            started_instant,
+            paused_wait_seconds: 0,
+            waiting_started_at: None,
+            writing_locked: false,
+            active_section: TypeChoice::Writing,
+            sections,
+            pending_types: vec![
+                TypeChoice::Translation,
+                TypeChoice::BankedCloze,
+                TypeChoice::LongReading,
+                TypeChoice::Careful1,
+                TypeChoice::Careful2,
+            ],
+            failed_types: Vec::new(),
+            writing_force_submitted: false,
+            final_force_submitted: false,
+        }
+    }
+
+    fn key_for(type_choice: TypeChoice) -> &'static str {
+        type_choice.key()
+    }
+
+    fn elapsed_exam_seconds(&self) -> i64 {
+        let base = self.started_instant.elapsed().as_secs() as i64;
+        let waiting = self
+            .waiting_started_at
+            .map(|started| started.elapsed().as_secs() as i64)
+            .unwrap_or(0);
+        (base - self.paused_wait_seconds - waiting).max(0)
+    }
+
+    fn pause_for_waiting(&mut self) {
+        if self.waiting_started_at.is_none() {
+            if let Some(section) = self.section_mut(self.active_section) {
+                if let Some(started) = section.active_since.take() {
+                    section.elapsed_seconds += started.elapsed().as_secs() as i64;
+                }
+            }
+            self.waiting_started_at = Some(Instant::now());
+        }
+    }
+
+    fn resume_from_waiting(&mut self) {
+        if let Some(started) = self.waiting_started_at.take() {
+            self.paused_wait_seconds += started.elapsed().as_secs() as i64;
+            if let Some(section) = self.section_mut(self.active_section) {
+                if section.active_since.is_none() {
+                    section.active_since = Some(Instant::now());
+                }
+            }
+        }
+    }
+
+    fn writing_elapsed_seconds(&self) -> i64 {
+        self.section(TypeChoice::Writing)
+            .map(|section| {
+                let raw = section.practice.started_instant.elapsed().as_secs() as i64;
+                let waiting = self
+                    .waiting_started_at
+                    .map(|started| started.elapsed().as_secs() as i64)
+                    .unwrap_or(0);
+                (raw - waiting).max(0)
+            })
+            .unwrap_or(0)
+    }
+
+    fn writing_remaining_seconds(&self) -> i64 {
+        (Self::WRITING_SECONDS - self.writing_elapsed_seconds()).max(0)
+    }
+
+    fn total_remaining_seconds(&self) -> i64 {
+        (Self::TOTAL_SECONDS - self.elapsed_exam_seconds()).max(0)
+    }
+
+    fn is_waiting(&self) -> bool {
+        self.waiting_started_at.is_some()
+    }
+
+    fn section(&self, type_choice: TypeChoice) -> Option<&MockExamSectionState> {
+        self.sections.get(Self::key_for(type_choice))
+    }
+
+    fn section_mut(&mut self, type_choice: TypeChoice) -> Option<&mut MockExamSectionState> {
+        self.sections.get_mut(Self::key_for(type_choice))
+    }
+
+    fn is_ready(&self, type_choice: TypeChoice) -> bool {
+        self.sections.contains_key(Self::key_for(type_choice))
+    }
+
+    fn register_ready_section(&mut self, type_choice: TypeChoice, question_set: QuestionSet) {
+        self.sections.insert(
+            Self::key_for(type_choice).to_string(),
+            MockExamSectionState {
+                type_choice,
+                practice: PracticeState::new(question_set, false),
+                locked: false,
+                elapsed_seconds: 0,
+                active_since: None,
+            },
+        );
+        self.pending_types.retain(|item| *item != type_choice);
+        self.failed_types.retain(|item| *item != type_choice);
+    }
+
+    fn register_failed_section(&mut self, type_choice: TypeChoice) {
+        if !self.failed_types.contains(&type_choice) {
+            self.failed_types.push(type_choice);
+        }
+    }
+
+    fn all_sections_ready(&self) -> bool {
+        self.pending_types.is_empty()
+    }
+
+    fn switch_section(&mut self, type_choice: TypeChoice) {
+        if self.is_ready(type_choice) {
+            let not_waiting = self.waiting_started_at.is_none();
+            if let Some(section) = self.section_mut(self.active_section) {
+                if let Some(started) = section.active_since.take() {
+                    section.elapsed_seconds += started.elapsed().as_secs() as i64;
+                }
+            }
+            self.active_section = type_choice;
+            if let Some(section) = self.section_mut(type_choice) {
+                if section.active_since.is_none() && not_waiting {
+                    section.active_since = Some(Instant::now());
+                }
+            }
+        }
+    }
+
+    fn active_section(&self) -> Option<&MockExamSectionState> {
+        self.section(self.active_section)
+    }
+
+    fn active_section_mut(&mut self) -> Option<&mut MockExamSectionState> {
+        self.section_mut(self.active_section)
+    }
+
+    fn lock_writing(&mut self) {
+        self.writing_locked = true;
+        if let Some(section) = self.section_mut(TypeChoice::Writing) {
+            section.locked = true;
+        }
+    }
+
+    fn current_section_elapsed_seconds(&self, type_choice: TypeChoice) -> i64 {
+        self.section(type_choice)
+            .map(|section| {
+                section.elapsed_seconds
+                    + section
+                        .active_since
+                        .map(|started| started.elapsed().as_secs() as i64)
+                        .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
+    fn is_section_locked(&self, type_choice: TypeChoice) -> bool {
+        self.section(type_choice).map(|section| section.locked).unwrap_or(false)
+    }
+
+    fn completed_sections(&self) -> usize {
+        self.sections
+            .values()
+            .filter(|section| {
+                if section.practice.question_set.questions.is_empty() {
+                    !section.practice.response_text().trim().is_empty()
+                } else {
+                    section.practice.unanswered_count() == 0
+                }
+            })
+            .count()
+    }
+
+    fn total_sections(&self) -> usize {
+        6
+    }
+}
+
 struct YueJieRustApp {
     backend: BackendBridge,
     screen: Screen,
@@ -1415,6 +2012,7 @@ struct YueJieRustApp {
     click_areas: Vec<ClickArea>,
     status_line: String,
     generating_task: Option<GeneratingTask>,
+    generation_context: GenerationContext,
     generating_tick: usize,
     generation_sequence: u64,
     generation_phase: String,
@@ -1422,23 +2020,36 @@ struct YueJieRustApp {
     generation_log: Vec<String>,
     generation_error_message: Option<String>,
     submitting_task: Option<SubmittingTask>,
+    submission_context: SubmissionContext,
+    mock_exam_generating_task: Option<MockExamGenerationTask>,
+    mock_exam_submitting_task: Option<MockExamSubmittingTask>,
     submission_sequence: u64,
+    submission_retry_count: usize,
     submission_phase: String,
     submission_message: String,
     submission_log: Vec<String>,
     submission_error_message: Option<String>,
     practice: Option<PracticeState>,
+    mock_exam_session: Option<MockExamSession>,
     result: Option<AttemptResult>,
     result_detail_scroll: u16,
     history: Vec<HistoryEntry>,
+    mock_exam_history: Vec<MockExamHistoryEntry>,
+    history_tab: HistoryTab,
     history_index: usize,
+    mock_exam_history_index: usize,
     review: Option<ReviewBundle>,
+    mock_exam_review: Option<MockExamRecord>,
     review_back_screen: Screen,
     review_detail_scroll: u16,
     weakness: Vec<WeaknessEntry>,
+    mock_exam_weakness: Vec<MockExamWeaknessEntry>,
     weakness_index: usize,
     vocabulary: Vec<VocabularyEntry>,
     vocabulary_index: usize,
+    insights_tab: InsightsTab,
+    mock_exam_weakness_index: usize,
+    home_mode: HomeMode,
     history_action_index: usize,
     result_action_index: usize,
     review_action_index: usize,
@@ -1468,6 +2079,7 @@ impl YueJieRustApp {
             click_areas: Vec::new(),
             status_line: String::from("方向键、Enter、Esc、Ctrl+Q 和鼠标都可使用。"),
             generating_task: None,
+            generation_context: GenerationContext::Practice,
             generating_tick: 0,
             generation_sequence: 0,
             generation_phase: String::from("idle"),
@@ -1475,23 +2087,36 @@ impl YueJieRustApp {
             generation_log: Vec::new(),
             generation_error_message: None,
             submitting_task: None,
+            submission_context: SubmissionContext::Practice,
+            mock_exam_generating_task: None,
+            mock_exam_submitting_task: None,
             submission_sequence: 0,
+            submission_retry_count: 0,
             submission_phase: String::from("idle"),
             submission_message: String::from("尚未开始评分。"),
             submission_log: Vec::new(),
             submission_error_message: None,
             practice: None,
+            mock_exam_session: None,
             result: None,
             result_detail_scroll: 0,
             history: Vec::new(),
+            mock_exam_history: Vec::new(),
+            history_tab: HistoryTab::Practice,
             history_index: 0,
+            mock_exam_history_index: 0,
             review: None,
+            mock_exam_review: None,
             review_back_screen: Screen::Home,
             review_detail_scroll: 0,
             weakness: Vec::new(),
+            mock_exam_weakness: Vec::new(),
             weakness_index: 0,
             vocabulary: Vec::new(),
             vocabulary_index: 0,
+            insights_tab: InsightsTab::PracticeWeakness,
+            mock_exam_weakness_index: 0,
+            home_mode: HomeMode::Practice,
             history_action_index: 0,
             result_action_index: 0,
             review_action_index: 0,
@@ -1556,19 +2181,36 @@ impl YueJieRustApp {
                                 Ok(question_set) => {
                                     self.generation_error_message = None;
                                     self.sync_selection_from_question_set(&question_set);
-                                    self.status_line = match question_set.source_type.as_str() {
-                                        "ai" => String::from("题目已生成，开始作答。"),
-                                        "ai_repaired" => {
-                                            String::from("题目已生成，并已自动修复结构后进入作答。")
+                                    match self.generation_context {
+                                        GenerationContext::Practice => {
+                                            self.status_line = match question_set.source_type.as_str()
+                                            {
+                                                "ai" => String::from("题目已生成，开始作答。"),
+                                                "ai_repaired" => String::from(
+                                                    "题目已生成，并已自动修复结构后进入作答。",
+                                                ),
+                                                other => format!(
+                                                    "题目来源：{}，现在开始作答。",
+                                                    display_source_type(other)
+                                                ),
+                                            };
+                                            self.practice =
+                                                Some(PracticeState::new(question_set, false));
+                                            self.result_action_index = 0;
+                                            self.screen = Screen::Practice;
                                         }
-                                        other => format!(
-                                            "题目来源：{}，现在开始作答。",
-                                            display_source_type(other)
-                                        ),
-                                    };
-                                    self.practice = Some(PracticeState::new(question_set, false));
-                                    self.result_action_index = 0;
-                                    self.screen = Screen::Practice;
+                                        GenerationContext::MockExamBootstrap => {
+                                            self.status_line = String::from(
+                                                "作文已生成，模拟四六级考试开始；其余部分会在后台继续生成。",
+                                            );
+                                            let session =
+                                                MockExamSession::new(self.selected_level, question_set);
+                                            self.mock_exam_session = Some(session);
+                                            self.practice = None;
+                                            self.start_mock_exam_background_generation()?;
+                                            self.screen = Screen::Practice;
+                                        }
+                                    }
                                 }
                                 Err(message) => {
                                     self.generation_error_message = Some(message.clone());
@@ -1581,6 +2223,84 @@ impl YueJieRustApp {
                                         "R/Enter 重试，Esc 返回题型选择，鼠标也可点击操作。",
                                     );
                                     self.screen = Screen::Generating;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(task) = &self.mock_exam_generating_task {
+                let mut pending_messages = Vec::new();
+                while let Ok(message) = task.receiver.try_recv() {
+                    pending_messages.push(message);
+                }
+                for message in pending_messages {
+                    match message {
+                        MockExamGenerationMessage::Progress { type_choice, message } => {
+                            self.push_generation_log(format!(
+                                "{}：{}",
+                                type_choice.label(),
+                                message
+                            ));
+                            if matches!(self.screen, Screen::MockExamWaiting) {
+                                self.generation_message = format!(
+                                    "后台正在准备 {}，{}",
+                                    type_choice.label(),
+                                    message
+                                );
+                            }
+                        }
+                        MockExamGenerationMessage::Retry {
+                            type_choice,
+                            attempt,
+                            error,
+                        } => {
+                            self.push_generation_log(format!(
+                                "{} 第 {} 次重试：{}",
+                                type_choice.label(),
+                                attempt,
+                                error
+                            ));
+                        }
+                        MockExamGenerationMessage::Ready {
+                            type_choice,
+                            question_set,
+                        } => {
+                            let mut should_resume = false;
+                            let mut should_switch_translation = false;
+                            if let Some(session) = &mut self.mock_exam_session {
+                                session.register_ready_section(type_choice, question_set);
+                                should_resume = session.is_waiting() && session.all_sections_ready();
+                                should_switch_translation = should_resume
+                                    && session.active_section == TypeChoice::Writing;
+                            }
+                            self.push_generation_log(format!(
+                                "{} 已就绪，可进入作答。",
+                                type_choice.label()
+                            ));
+                            if should_resume {
+                                if let Some(session) = &mut self.mock_exam_session {
+                                    session.resume_from_waiting();
+                                    if should_switch_translation {
+                                        session.switch_section(TypeChoice::Translation);
+                                    }
+                                }
+                                self.status_line = String::from(
+                                        "其余题目已全部准备完成，可继续整套模拟四六级考试。",
+                                );
+                                self.screen = Screen::Practice;
+                            }
+                        }
+                        MockExamGenerationMessage::Finished => {
+                            self.mock_exam_generating_task = None;
+                            if let Some(session) = &self.mock_exam_session {
+                                if session.all_sections_ready()
+                                    && matches!(self.screen, Screen::MockExamWaiting)
+                                {
+                                    self.status_line = String::from(
+                                        "模拟四六级考试题目已全部就绪，继续作答即可。",
+                                    );
                                 }
                             }
                         }
@@ -1616,34 +2336,147 @@ impl YueJieRustApp {
                             match result {
                                 Ok(result) => {
                                     self.submission_error_message = None;
-                                    if let Some(practice) = &self.practice {
-                                        self.review = Some(ReviewBundle {
-                                            question_set: practice.question_set.clone(),
-                                            result: result.clone(),
-                                            answers: practice.answers.clone(),
-                                        });
+                                    match self.submission_context {
+                                        SubmissionContext::Practice => {
+                                            if let Some(practice) = &self.practice {
+                                                self.review = Some(ReviewBundle {
+                                                    question_set: practice.question_set.clone(),
+                                                    result: result.clone(),
+                                                    answers: practice.answers.clone(),
+                                                });
+                                            }
+                                            self.review_back_screen = Screen::Result;
+                                            self.result = Some(result);
+                                            self.result_detail_scroll = 0;
+                                            self.result_action_index = 0;
+                                            self.review_action_index = 0;
+                                            self.status_line = String::from(
+                                                "Enter/1 查看解析，2 下一题，3 重做，4 题型，5 首页，PageUp/PageDown 可浏览摘要。",
+                                            );
+                                            self.screen = Screen::Result;
+                                        }
+                                        SubmissionContext::MockExam => {}
                                     }
-                                    self.review_back_screen = Screen::Result;
-                                    self.result = Some(result);
-                                    self.result_detail_scroll = 0;
-                                    self.result_action_index = 0;
-                                    self.review_action_index = 0;
-                                    self.status_line = String::from(
-                                        "Enter/1 查看解析，2 下一题，3 重做，4 题型，5 首页，PageUp/PageDown 可浏览摘要。",
-                                    );
-                                    self.screen = Screen::Result;
                                 }
                                 Err(message) => {
-                                    self.submission_error_message = Some(message.clone());
-                                    self.submission_phase = String::from("failed");
-                                    self.submission_message = String::from(
-                                        "本轮评分未成功，请直接重试或返回作答界面。",
-                                    );
-                                    self.push_submission_log(format!("失败：{}", message));
+                                    if self.submission_retry_count < SUBMISSION_AUTO_RETRY_LIMIT {
+                                        self.submission_retry_count += 1;
+                                        self.submission_error_message = None;
+                                        self.submission_phase = String::from("retry");
+                                        self.submission_message = format!(
+                                            "评分暂时失败，正在自动重试第 {}/{} 次。",
+                                            self.submission_retry_count, SUBMISSION_AUTO_RETRY_LIMIT
+                                        );
+                                        self.push_submission_log(format!(
+                                            "评分失败，正在自动重试第 {}/{} 次：{}",
+                                            self.submission_retry_count,
+                                            SUBMISSION_AUTO_RETRY_LIMIT,
+                                            message
+                                        ));
+                                        self.status_line = String::from(
+                                            "评分暂时失败，系统正在原地自动重试，请稍候。",
+                                        );
+                                        self.start_submission_internal(false)?;
+                                    } else {
+                                        self.submission_error_message = Some(message.clone());
+                                        self.submission_phase = String::from("failed");
+                                        self.submission_message = String::from(
+                                            "本轮评分多次重试后仍未成功，请手动重试或返回作答界面。",
+                                        );
+                                        self.push_submission_log(format!(
+                                            "自动重试已用尽：{}",
+                                            message
+                                        ));
+                                        self.status_line = String::from(
+                                            "自动重试已达上限，R/Enter 可继续重试，Esc 返回作答界面。",
+                                        );
+                                        self.screen = Screen::Submitting;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(task) = &self.mock_exam_submitting_task {
+                let active_job_id = task.job_id;
+                let mut pending_messages = Vec::new();
+                while let Ok(message) = task.receiver.try_recv() {
+                    pending_messages.push(message);
+                }
+                for message in pending_messages {
+                    match message {
+                        MockExamSubmissionMessage::Progress {
+                            job_id,
+                            phase,
+                            message,
+                        } => {
+                            if job_id != active_job_id {
+                                continue;
+                            }
+                            self.submission_phase = phase;
+                            self.submission_message = message.clone();
+                            self.push_submission_log(message);
+                        }
+                        MockExamSubmissionMessage::Finished { job_id, result } => {
+                            if job_id != active_job_id {
+                                continue;
+                            }
+                            self.mock_exam_submitting_task = None;
+                            match result {
+                                Ok(record) => {
+                                    self.submission_error_message = None;
+                                    self.mock_exam_review = Some(record);
+                                    self.history = self.backend.history()?.history;
+                                    self.mock_exam_history = self.backend.mock_exam_history()?.history;
+                                    self.history_tab = HistoryTab::MockExam;
+                                    self.review_back_screen = Screen::History;
+                                    self.review_detail_scroll = 0;
                                     self.status_line = String::from(
-                                        "R/Enter 重试评分，Esc 返回作答界面，不会清空你的答案。",
+                                        "模拟四六级考试总评已生成，PageUp/PageDown 查看详情，Enter/Esc 返回历史。",
                                     );
-                                    self.screen = Screen::Submitting;
+                                    self.mock_exam_session = None;
+                                    self.refresh_overview()?;
+                                    self.screen = Screen::MockExamReview;
+                                }
+                                Err(message) => {
+                                    if self.submission_retry_count < SUBMISSION_AUTO_RETRY_LIMIT {
+                                        self.submission_retry_count += 1;
+                                        self.submission_error_message = None;
+                                        self.submission_phase = String::from("retry");
+                                        self.submission_message = format!(
+                                            "整套评分暂时失败，正在自动重试第 {}/{} 次。",
+                                            self.submission_retry_count, SUBMISSION_AUTO_RETRY_LIMIT
+                                        );
+                                        self.push_submission_log(format!(
+                                            "整套评分失败，正在自动重试第 {}/{} 次：{}",
+                                            self.submission_retry_count,
+                                            SUBMISSION_AUTO_RETRY_LIMIT,
+                                            message
+                                        ));
+                                        self.status_line = String::from(
+                                            "整套评分暂时失败，系统正在原地自动重试，请稍候。",
+                                        );
+                                        self.submit_mock_exam_internal(false)?;
+                                    } else {
+                                        if let Some(session) = &mut self.mock_exam_session {
+                                            session.resume_from_waiting();
+                                        }
+                                        self.submission_error_message = Some(message.clone());
+                                        self.submission_phase = String::from("failed");
+                                        self.submission_message = String::from(
+                                            "模拟四六级考试整套评分多次重试后仍未成功，请手动重试或返回作答界面。",
+                                        );
+                                        self.push_submission_log(format!(
+                                            "自动重试已用尽：{}",
+                                            message
+                                        ));
+                                        self.status_line = String::from(
+                                            "自动重试已达上限，R/Enter 可继续重试，Esc 返回模拟四六级考试作答界面。",
+                                        );
+                                        self.screen = Screen::Submitting;
+                                    }
                                 }
                             }
                         }
@@ -1670,10 +2503,15 @@ impl YueJieRustApp {
                 }
             } else if matches!(
                 self.screen,
-                Screen::Generating | Screen::Submitting | Screen::Result
+                Screen::Generating
+                    | Screen::Submitting
+                    | Screen::Result
+                    | Screen::MockExamWaiting
             ) {
                 self.generating_tick = self.generating_tick.wrapping_add(1);
             }
+
+            self.tick_mock_exam_session()?;
         }
         Ok(())
     }
@@ -1701,6 +2539,9 @@ impl YueJieRustApp {
             Screen::Review => self.handle_review_key(key)?,
             Screen::Weakness => self.handle_weakness_key(key),
             Screen::Vocabulary => self.handle_vocabulary_key(key),
+            Screen::Insights => self.handle_insights_key(key),
+            Screen::MockExamWaiting => self.handle_mock_exam_waiting_key(key)?,
+            Screen::MockExamReview => self.handle_mock_exam_review_key(key)?,
             Screen::Settings => self.handle_settings_key(key)?,
         }
         Ok(false)
@@ -1712,7 +2553,10 @@ impl YueJieRustApp {
         }
         match key.code {
             KeyCode::Enter | KeyCode::Char('r') | KeyCode::Char('R') => {
-                self.perform_action(Action::RetryGeneration)?
+                match self.generation_context {
+                    GenerationContext::Practice => self.perform_action(Action::RetryGeneration)?,
+                    GenerationContext::MockExamBootstrap => self.start_mock_exam()?,
+                }
             }
             _ => {}
         }
@@ -1725,7 +2569,10 @@ impl YueJieRustApp {
         }
         match key.code {
             KeyCode::Enter | KeyCode::Char('r') | KeyCode::Char('R') => {
-                self.perform_action(Action::RetrySubmission)?
+                match self.submission_context {
+                    SubmissionContext::Practice => self.perform_action(Action::RetrySubmission)?,
+                    SubmissionContext::MockExam => self.submit_mock_exam()?,
+                }
             }
             _ => {}
         }
@@ -1745,20 +2592,47 @@ impl YueJieRustApp {
                     task.cancel_flag.store(true, Ordering::Relaxed);
                 }
                 self.generating_task = None;
-                self.open_type_screen()?;
-                self.status_line = String::from("已取消本次生成。");
+                match self.generation_context {
+                    GenerationContext::Practice => {
+                        self.open_type_screen()?;
+                        self.status_line = String::from("已取消本次生成。");
+                    }
+                    GenerationContext::MockExamBootstrap => {
+                        self.mock_exam_session = None;
+                        self.return_home()?;
+                        self.status_line = String::from("已取消本次模拟四六级考试生成。");
+                    }
+                }
             }
             Screen::Submitting => {
                 if let Some(task) = &self.submitting_task {
                     task.cancel_flag.store(true, Ordering::Relaxed);
                 }
+                if let Some(task) = &self.mock_exam_submitting_task {
+                    task.cancel_flag.store(true, Ordering::Relaxed);
+                }
                 self.submitting_task = None;
+                self.mock_exam_submitting_task = None;
+                if let Some(session) = &mut self.mock_exam_session {
+                    session.resume_from_waiting();
+                }
                 self.screen = Screen::Practice;
                 self.status_line = String::from("已取消本次评分，返回作答界面。");
             }
             Screen::Practice => {
-                self.open_type_screen()?;
-                self.status_line = String::from("已返回题型选择。");
+                if self.mock_exam_session.is_some() {
+                    if let Some(task) = &self.mock_exam_generating_task {
+                        task.cancel_flag.store(true, Ordering::Relaxed);
+                    }
+                    self.mock_exam_session = None;
+                    self.mock_exam_generating_task = None;
+                    self.practice = None;
+                    self.return_home()?;
+                    self.status_line = String::from("已退出模拟四六级考试界面并返回首页。");
+                } else {
+                    self.open_type_screen()?;
+                    self.status_line = String::from("已返回题型选择。");
+                }
             }
             Screen::Result => {
                 self.open_type_screen()?;
@@ -1771,6 +2645,18 @@ impl YueJieRustApp {
             }
             Screen::Weakness => self.return_home()?,
             Screen::Vocabulary => self.return_home()?,
+            Screen::Insights => self.return_home()?,
+            Screen::MockExamWaiting => {
+                if let Some(session) = &mut self.mock_exam_session {
+                    session.resume_from_waiting();
+                }
+                self.screen = Screen::Practice;
+                self.status_line = String::from("已返回模拟四六级考试界面。");
+            }
+            Screen::MockExamReview => {
+                self.screen = Screen::History;
+                self.status_line = String::from("已返回刷题历史。");
+            }
             Screen::Settings => self.return_home()?,
         };
         Ok(())
@@ -1850,6 +2736,9 @@ impl YueJieRustApp {
     }
 
     fn handle_practice_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.mock_exam_session.is_some() {
+            return self.handle_mock_exam_practice_key(key);
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
         {
@@ -1857,122 +2746,74 @@ impl YueJieRustApp {
             return Ok(());
         }
         if let Some(practice) = &mut self.practice {
-            if practice.question_set.questions.is_empty() {
-                match key.code {
-                    KeyCode::Left => practice.move_response_cursor_left(),
-                    KeyCode::Right => practice.move_response_cursor_right(),
-                    KeyCode::Home => practice.move_response_cursor_home(),
-                    KeyCode::End => practice.move_response_cursor_end(),
-                    KeyCode::Up => {
-                        practice.subjective_scroll = practice.subjective_scroll.saturating_sub(1);
-                    }
-                    KeyCode::Down => {
-                        practice.subjective_scroll = practice.subjective_scroll.saturating_add(1);
-                    }
-                    KeyCode::Enter => practice.insert_response_newline(),
-                    KeyCode::Backspace => practice.backspace_response_char(),
-                    KeyCode::Delete => practice.clear_current_answer(),
-                    KeyCode::Tab => practice.insert_response_char(' '),
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        practice.insert_response_char(c);
-                    }
-                    KeyCode::PageUp => {
-                        practice.passage_scroll = practice.passage_scroll.saturating_sub(2);
-                    }
-                    KeyCode::PageDown => {
-                        practice.passage_scroll = practice.passage_scroll.saturating_add(2);
-                    }
-                    _ => {}
-                }
+            handle_practice_input_core(practice, key, false)?;
+        }
+        Ok(())
+    }
+
+    fn handle_mock_exam_waiting_key(&mut self, _key: KeyEvent) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_mock_exam_practice_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+        {
+            self.submit_current_mock_exam_section()?;
+            return Ok(());
+        }
+        if let Some(session) = &self.mock_exam_session {
+            if session.is_waiting() {
                 return Ok(());
             }
-            match practice.question_set.question_type.as_str() {
-                "banked_cloze" => match key.code {
-                    KeyCode::Left => {
-                        practice.selected_blank = practice.selected_blank.saturating_sub(1);
-                    }
-                    KeyCode::Right => {
-                        practice.selected_blank = (practice.selected_blank + 1)
-                            .min(practice.question_set.questions.len() - 1);
-                    }
-                    KeyCode::Up => {
-                        practice.selected_blank = practice.selected_blank.saturating_sub(5);
-                    }
-                    KeyCode::Down => {
-                        practice.selected_blank = (practice.selected_blank + 5)
-                            .min(practice.question_set.questions.len() - 1);
-                    }
-                    KeyCode::Char(c) => {
-                        let upper = c.to_ascii_uppercase().to_string();
-                        if practice.available_labels().contains(&upper) {
-                            practice.assign_answer(upper);
-                        }
-                    }
-                    KeyCode::Backspace | KeyCode::Delete => practice.clear_current_answer(),
-                    KeyCode::Enter => self.submit_practice()?,
-                    KeyCode::PageUp => {
-                        practice.passage_scroll = practice.passage_scroll.saturating_sub(3);
-                    }
-                    KeyCode::PageDown => {
-                        practice.passage_scroll = practice.passage_scroll.saturating_add(3);
-                    }
-                    _ => {}
-                },
-                _ => match key.code {
-                    KeyCode::Up => {
-                        practice.selected_question = practice.selected_question.saturating_sub(1);
-                        practice.sync_choice_cursor_to_current_answer();
-                    }
-                    KeyCode::Down => {
-                        practice.selected_question = (practice.selected_question + 1)
-                            .min(practice.question_set.questions.len() - 1);
-                        practice.sync_choice_cursor_to_current_answer();
-                    }
-                    KeyCode::Left => {
-                        practice.choice_cursor = practice.choice_cursor.saturating_sub(1);
-                    }
-                    KeyCode::Right => {
-                        let labels = practice.available_labels();
-                        if !labels.is_empty() {
-                            practice.choice_cursor =
-                                (practice.choice_cursor + 1).min(labels.len().saturating_sub(1));
-                        }
-                    }
-                    KeyCode::Char(' ') => {
-                        let labels = practice.available_labels();
-                        if !labels.is_empty() {
-                            practice.assign_answer(labels[practice.choice_cursor].clone());
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        let upper = c.to_ascii_uppercase().to_string();
-                        if practice.available_labels().contains(&upper) {
-                            practice.assign_answer(upper);
-                        }
-                    }
-                    KeyCode::Backspace | KeyCode::Delete => practice.clear_current_answer(),
-                    KeyCode::Enter => {
-                        let labels = practice.available_labels();
-                        if !labels.is_empty() {
-                            practice.assign_answer(labels[practice.choice_cursor].clone());
-                        } else {
-                            self.submit_practice()?;
-                        }
-                    }
-                    KeyCode::PageUp => {
-                        practice.passage_scroll = practice.passage_scroll.saturating_sub(3);
-                    }
-                    KeyCode::PageDown => {
-                        practice.passage_scroll = practice.passage_scroll.saturating_add(3);
-                    }
-                    KeyCode::Tab => {
-                        let labels = practice.available_labels();
-                        if !labels.is_empty() {
-                            practice.choice_cursor = (practice.choice_cursor + 1) % labels.len();
-                        }
-                    }
-                    _ => {}
-                },
+        }
+        if let Some(session) = &mut self.mock_exam_session {
+            let can_switch = session.writing_locked;
+            if matches!(key.code, KeyCode::F(1)) {
+                session.switch_section(TypeChoice::Writing);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::F(2)) && can_switch && session.is_ready(TypeChoice::Translation) {
+                session.switch_section(TypeChoice::Translation);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::F(3)) && can_switch && session.is_ready(TypeChoice::BankedCloze) {
+                session.switch_section(TypeChoice::BankedCloze);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::F(4)) && can_switch && session.is_ready(TypeChoice::LongReading) {
+                session.switch_section(TypeChoice::LongReading);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::F(5)) && can_switch && session.is_ready(TypeChoice::Careful1) {
+                session.switch_section(TypeChoice::Careful1);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::F(6)) && can_switch && session.is_ready(TypeChoice::Careful2) {
+                session.switch_section(TypeChoice::Careful2);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::F(9)) {
+                self.submit_mock_exam()?;
+                return Ok(());
+            }
+            if !can_switch
+                && matches!(
+                    key.code,
+                    KeyCode::F(2) | KeyCode::F(3) | KeyCode::F(4) | KeyCode::F(5) | KeyCode::F(6)
+                )
+            {
+                self.status_line = String::from("模拟四六级考试第一步只能写作文，提交作文后才能切换其他题型。");
+                return Ok(());
+            }
+
+            let active_type = session.active_section;
+            if session.is_section_locked(active_type) {
+                self.status_line = String::from("作文已锁定，不能再修改；请切换到其他题型继续作答。");
+                return Ok(());
+            }
+            if let Some(section) = session.active_section_mut() {
+                return handle_practice_input_core(&mut section.practice, key, true);
             }
         }
         Ok(())
@@ -2006,35 +2847,77 @@ impl YueJieRustApp {
     }
 
     fn handle_history_key(&mut self, key: KeyEvent) -> Result<()> {
-        if self.history.is_empty() {
-            return Ok(());
-        }
+        let active_empty = match self.history_tab {
+            HistoryTab::Practice => self.history.is_empty(),
+            HistoryTab::MockExam => self.mock_exam_history.is_empty(),
+        };
         match key.code {
+            KeyCode::Tab | KeyCode::Char('1') | KeyCode::Char('2') => {
+                self.toggle_history_tab(key.code);
+                self.pending_history_delete_attempt_id = None;
+            }
             KeyCode::Left => {
                 self.history_action_index = self.history_action_index.saturating_sub(1);
                 self.pending_history_delete_attempt_id = None;
             }
             KeyCode::Right => {
-                self.history_action_index = (self.history_action_index + 1).min(3);
+                let max_index = if self.history_tab == HistoryTab::Practice {
+                    3
+                } else {
+                    2
+                };
+                self.history_action_index = (self.history_action_index + 1).min(max_index);
                 self.pending_history_delete_attempt_id = None;
             }
             KeyCode::Up => {
-                self.history_index = self.history_index.saturating_sub(1);
+                if self.history_tab == HistoryTab::Practice {
+                    self.history_index = self.history_index.saturating_sub(1);
+                } else {
+                    self.mock_exam_history_index = self.mock_exam_history_index.saturating_sub(1);
+                }
                 self.pending_history_delete_attempt_id = None;
             }
             KeyCode::Down => {
-                self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                if self.history_tab == HistoryTab::Practice {
+                    if !self.history.is_empty() {
+                        self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                    }
+                } else if !self.mock_exam_history.is_empty() {
+                    self.mock_exam_history_index =
+                        (self.mock_exam_history_index + 1).min(self.mock_exam_history.len() - 1);
+                }
                 self.pending_history_delete_attempt_id = None;
             }
-            KeyCode::Enter => match self.history_action_index {
-                0 => self.perform_action(Action::HistoryReview(self.history_index))?,
-                1 => self.perform_action(Action::HistoryRedo(self.history_index))?,
-                2 => self.perform_action(Action::HistoryDelete(self.history_index))?,
-                _ => self.perform_action(Action::BackHistory)?,
+            KeyCode::Enter if !active_empty => match self.history_tab {
+                HistoryTab::Practice => match self.history_action_index {
+                    0 => self.perform_action(Action::HistoryReview(self.history_index))?,
+                    1 => self.perform_action(Action::HistoryRedo(self.history_index))?,
+                    2 => self.perform_action(Action::HistoryDelete(self.history_index))?,
+                    _ => self.perform_action(Action::BackHistory)?,
+                },
+                HistoryTab::MockExam => match self.history_action_index {
+                    0 => self.perform_action(Action::MockExamHistoryReview(
+                        self.mock_exam_history_index,
+                    ))?,
+                    1 => self.perform_action(Action::MockExamHistoryDelete(
+                        self.mock_exam_history_index,
+                    ))?,
+                    _ => self.perform_action(Action::BackHistory)?,
+                },
             },
-            KeyCode::Char('r') => self.perform_action(Action::HistoryRedo(self.history_index))?,
+            KeyCode::Char('r') if self.history_tab == HistoryTab::Practice && !active_empty => {
+                self.perform_action(Action::HistoryRedo(self.history_index))?
+            }
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                self.perform_action(Action::HistoryDelete(self.history_index))?
+                if !active_empty {
+                    if self.history_tab == HistoryTab::Practice {
+                        self.perform_action(Action::HistoryDelete(self.history_index))?
+                    } else {
+                        self.perform_action(Action::MockExamHistoryDelete(
+                            self.mock_exam_history_index,
+                        ))?
+                    }
+                }
             }
             _ => {}
         }
@@ -2090,6 +2973,64 @@ impl YueJieRustApp {
         }
     }
 
+    fn handle_insights_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Left => self.insights_tab = previous_insights_tab(self.insights_tab),
+            KeyCode::Right | KeyCode::Tab => {
+                self.insights_tab = next_insights_tab(self.insights_tab)
+            }
+            KeyCode::Char('1') => self.insights_tab = InsightsTab::PracticeWeakness,
+            KeyCode::Char('2') => self.insights_tab = InsightsTab::MockExamWeakness,
+            KeyCode::Char('3') => self.insights_tab = InsightsTab::Vocabulary,
+            KeyCode::Up => match self.insights_tab {
+                InsightsTab::PracticeWeakness => {
+                    self.weakness_index = self.weakness_index.saturating_sub(1)
+                }
+                InsightsTab::MockExamWeakness => {
+                    self.mock_exam_weakness_index = self.mock_exam_weakness_index.saturating_sub(1)
+                }
+                InsightsTab::Vocabulary => {
+                    self.vocabulary_index = self.vocabulary_index.saturating_sub(1)
+                }
+            },
+            KeyCode::Down => match self.insights_tab {
+                InsightsTab::PracticeWeakness => {
+                    if !self.weakness.is_empty() {
+                        self.weakness_index = (self.weakness_index + 1).min(self.weakness.len() - 1);
+                    }
+                }
+                InsightsTab::MockExamWeakness => {
+                    if !self.mock_exam_weakness.is_empty() {
+                        self.mock_exam_weakness_index =
+                            (self.mock_exam_weakness_index + 1).min(self.mock_exam_weakness.len() - 1);
+                    }
+                }
+                InsightsTab::Vocabulary => {
+                    if !self.vocabulary.is_empty() {
+                        self.vocabulary_index = (self.vocabulary_index + 1).min(self.vocabulary.len() - 1);
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_mock_exam_review_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::PageUp => {
+                self.review_detail_scroll = self.review_detail_scroll.saturating_sub(3);
+            }
+            KeyCode::PageDown => {
+                self.review_detail_scroll = self.review_detail_scroll.saturating_add(3);
+            }
+            KeyCode::Enter => {
+                self.perform_action(Action::BackReview)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_settings_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Up => self.settings_focus = self.settings_focus.saturating_sub(1),
@@ -2119,7 +3060,12 @@ impl YueJieRustApp {
             }
             MouseEventKind::ScrollUp => match self.screen {
                 Screen::Practice => {
-                    if let Some(practice) = &mut self.practice {
+                    if let Some(session) = &mut self.mock_exam_session {
+                        if let Some(section) = session.active_section_mut() {
+                            section.practice.passage_scroll =
+                                section.practice.passage_scroll.saturating_sub(2);
+                        }
+                    } else if let Some(practice) = &mut self.practice {
                         practice.passage_scroll = practice.passage_scroll.saturating_sub(2);
                     }
                 }
@@ -2143,7 +3089,12 @@ impl YueJieRustApp {
             },
             MouseEventKind::ScrollDown => match self.screen {
                 Screen::Practice => {
-                    if let Some(practice) = &mut self.practice {
+                    if let Some(session) = &mut self.mock_exam_session {
+                        if let Some(section) = session.active_section_mut() {
+                            section.practice.passage_scroll =
+                                section.practice.passage_scroll.saturating_add(2);
+                        }
+                    } else if let Some(practice) = &mut self.practice {
                         practice.passage_scroll = practice.passage_scroll.saturating_add(2);
                     }
                 }
@@ -2174,17 +3125,45 @@ impl YueJieRustApp {
     fn perform_action(&mut self, action: Action) -> Result<()> {
         match action {
             Action::HomeMenu(index) => match index {
-                0 => self.screen = Screen::LevelSelect,
-                1 => self.open_history()?,
-                2 => self.open_weakness()?,
-                3 => self.open_vocabulary()?,
+                0 => {
+                    self.home_mode = HomeMode::Practice;
+                    self.screen = Screen::LevelSelect;
+                    self.status_line = String::from("请选择普通刷题的等级。");
+                }
+                1 => {
+                    self.home_mode = HomeMode::MockExam;
+                    self.screen = Screen::LevelSelect;
+                    self.status_line = String::from("请选择模拟四六级考试等级，确认后将先生成作文。");
+                }
+                2 => self.open_history()?,
+                3 => self.open_weakness()?,
                 4 => self.open_settings()?,
                 5 => self.should_quit = true,
                 _ => {}
             },
+            Action::OpenInsightsTab(index) => {
+                self.insights_tab = match index {
+                    0 => InsightsTab::PracticeWeakness,
+                    1 => InsightsTab::MockExamWeakness,
+                    _ => InsightsTab::Vocabulary,
+                };
+            }
+            Action::OpenHistoryTab(index) => {
+                self.history_tab = if index == 0 {
+                    HistoryTab::Practice
+                } else {
+                    HistoryTab::MockExam
+                };
+                self.history_action_index = 0;
+                self.pending_history_delete_attempt_id = None;
+            }
             Action::Level(level) => {
                 self.selected_level = level;
-                self.open_type_screen()?;
+                if self.home_mode == HomeMode::MockExam {
+                    self.start_mock_exam()?;
+                } else {
+                    self.open_type_screen()?;
+                }
             }
             Action::Type(type_choice) => {
                 self.selected_type = type_choice;
@@ -2207,12 +3186,17 @@ impl YueJieRustApp {
             Action::BackVocabulary => self.return_home()?,
             Action::BackSettings => self.return_home()?,
             Action::BackReview => {
-                self.screen = self.review_back_screen;
-                self.status_line = if self.review_back_screen == Screen::History {
-                    String::from("已返回刷题历史。")
+                if matches!(self.screen, Screen::MockExamReview) {
+                    self.screen = Screen::History;
+                    self.status_line = String::from("已返回刷题历史。");
                 } else {
-                    String::from("已返回结果总览。")
-                };
+                    self.screen = self.review_back_screen;
+                    self.status_line = if self.review_back_screen == Screen::History {
+                        String::from("已返回刷题历史。")
+                    } else {
+                        String::from("已返回结果总览。")
+                    };
+                }
             }
             Action::HistoryReview(index) => {
                 if let Some(item) = self.history.get(index) {
@@ -2285,9 +3269,79 @@ impl YueJieRustApp {
                 self.status_line =
                     String::from("已选中历史记录，Enter 查看解析，R 重新作答，D 删除记录。");
             }
-            Action::SubmitPractice => self.submit_practice()?,
+            Action::MockExamHistoryReview(index) => {
+                if let Some(item) = self.mock_exam_history.get(index) {
+                    let review = self.backend.mock_exam_review(&item.exam_id)?;
+                    self.mock_exam_review = Some(review.mock_exam);
+                    self.review_back_screen = Screen::History;
+                    self.review_detail_scroll = 0;
+                    self.status_line = String::from(
+                        "PageUp/PageDown 可滚动查看模拟四六级考试总评与各部分表现，Enter/Esc 返回历史。",
+                    );
+                    self.screen = Screen::MockExamReview;
+                }
+            }
+            Action::MockExamHistoryDelete(index) => {
+                if let Some(item) = self.mock_exam_history.get(index).cloned() {
+                    let response = self.backend.delete_mock_exam(&item.exam_id)?;
+                    self.refresh_overview()?;
+                    self.mock_exam_history = self.backend.mock_exam_history()?.history;
+                    self.mock_exam_history_index = self
+                        .mock_exam_history_index
+                        .min(self.mock_exam_history.len().saturating_sub(1));
+                    self.mock_exam_weakness.clear();
+                    self.vocabulary.clear();
+                    self.status_line = if self.mock_exam_history.is_empty() {
+                        String::from("模拟四六级考试记录已删除，相关词汇与模拟四六级考试弱势已完成重算。")
+                    } else {
+                        format!(
+                            "已删除一条 {} 模拟四六级考试记录（{:.1} 分），相关统计已重算。",
+                            format_level_label(&response.deleted.level),
+                            response.deleted.total_score
+                        )
+                    };
+                }
+            }
+            Action::MockExamHistorySelect(index) => {
+                self.mock_exam_history_index =
+                    index.min(self.mock_exam_history.len().saturating_sub(1));
+                self.status_line = String::from("已选中模拟四六级考试记录，Enter 查看总评，D 删除记录。");
+            }
+            Action::MockExamSelectSection(type_choice) => {
+                if let Some(session) = &mut self.mock_exam_session {
+                    if type_choice != TypeChoice::Writing && !session.writing_locked {
+                        self.status_line =
+                            String::from("模拟四六级考试第一步只能写作文，提交作文后才能切换其他题型。");
+                    } else if session.is_ready(type_choice) {
+                        session.switch_section(type_choice);
+                        self.screen = Screen::Practice;
+                        self.status_line =
+                            format!("已切换到 {}，可继续作答或修改答案。", type_choice.label());
+                    } else {
+                        self.status_line =
+                            format!("{} 仍在后台生成，请稍候。", type_choice.label());
+                    }
+                }
+            }
+            Action::MockExamSubmit => self.submit_mock_exam()?,
+            Action::SubmitPractice => {
+                if self.mock_exam_session.is_some() {
+                    self.submit_current_mock_exam_section()?;
+                } else {
+                    self.submit_practice()?;
+                }
+            }
             Action::PracticeBack => {
-                if self.practice.is_some() {
+                if self.mock_exam_session.is_some() {
+                    if let Some(task) = &self.mock_exam_generating_task {
+                        task.cancel_flag.store(true, Ordering::Relaxed);
+                    }
+                    self.mock_exam_session = None;
+                    self.mock_exam_generating_task = None;
+                    self.practice = None;
+                    self.return_home()?;
+                    self.status_line = String::from("已退出模拟四六级考试并返回首页。");
+                } else if self.practice.is_some() {
                     self.screen = Screen::Practice;
                     self.status_line = String::from("已返回作答界面。");
                 } else {
@@ -2296,13 +3350,26 @@ impl YueJieRustApp {
                 }
             }
             Action::PracticeSelectBlank(index) => {
-                if let Some(practice) = &mut self.practice {
+                if let Some(session) = &mut self.mock_exam_session {
+                    if let Some(section) = session.active_section_mut() {
+                        section.practice.selected_blank =
+                            index.min(section.practice.question_set.questions.len() - 1);
+                        section.practice.submit_confirm_pending = false;
+                    }
+                } else if let Some(practice) = &mut self.practice {
                     practice.selected_blank = index.min(practice.question_set.questions.len() - 1);
                     practice.submit_confirm_pending = false;
                 }
             }
             Action::PracticeSelectQuestion(index) => {
-                if let Some(practice) = &mut self.practice {
+                if let Some(session) = &mut self.mock_exam_session {
+                    if let Some(section) = session.active_section_mut() {
+                        section.practice.selected_question =
+                            index.min(section.practice.question_set.questions.len() - 1);
+                        section.practice.submit_confirm_pending = false;
+                        section.practice.sync_choice_cursor_to_current_answer();
+                    }
+                } else if let Some(practice) = &mut self.practice {
                     practice.selected_question =
                         index.min(practice.question_set.questions.len() - 1);
                     practice.submit_confirm_pending = false;
@@ -2310,7 +3377,13 @@ impl YueJieRustApp {
                 }
             }
             Action::PracticeAssign(answer) => {
-                if let Some(practice) = &mut self.practice {
+                if let Some(session) = &mut self.mock_exam_session {
+                    if let Some(section) = session.active_section_mut() {
+                        if !section.locked {
+                            section.practice.assign_answer(answer);
+                        }
+                    }
+                } else if let Some(practice) = &mut self.practice {
                     practice.assign_answer(answer);
                 }
             }
@@ -2415,11 +3488,18 @@ impl YueJieRustApp {
                 self.vocabulary_index = index.min(self.vocabulary.len().saturating_sub(1));
                 self.status_line = String::from("已选中词汇，右侧查看详细信息。");
             }
+            Action::MockWeaknessSelect(index) => {
+                self.mock_exam_weakness_index =
+                    index.min(self.mock_exam_weakness.len().saturating_sub(1));
+                self.status_line = String::from("已选中模拟四六级考试薄弱项，右侧查看当前分析。");
+            }
         }
         Ok(())
     }
 
     fn open_type_screen(&mut self) -> Result<()> {
+        self.home_mode = HomeMode::Practice;
+        self.generation_context = GenerationContext::Practice;
         let response = self.backend.type_stats(self.selected_level)?;
         self.type_cards = response.cards;
         self.type_index = TypeChoice::all()
@@ -2435,6 +3515,19 @@ impl YueJieRustApp {
         self.screen = Screen::Home;
         self.status_line = String::from("已回到首页。");
         Ok(())
+    }
+
+    fn start_mock_exam(&mut self) -> Result<()> {
+        self.home_mode = HomeMode::MockExam;
+        self.selected_type = TypeChoice::Writing;
+        self.generation_context = GenerationContext::MockExamBootstrap;
+        self.mock_exam_session = None;
+        self.practice = None;
+        self.result = None;
+        self.review = None;
+        self.mock_exam_review = None;
+        self.generation_log.clear();
+        self.start_generation()
     }
 
     fn start_generation(&mut self) -> Result<()> {
@@ -2474,6 +3567,61 @@ impl YueJieRustApp {
         Ok(())
     }
 
+    fn start_mock_exam_background_generation(&mut self) -> Result<()> {
+        let backend = BackendBridge::new()?;
+        let level = self.selected_level;
+        let (tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.mock_exam_generating_task = Some(MockExamGenerationTask {
+            started_at: Instant::now(),
+            receiver: rx,
+            cancel_flag: cancel_flag.clone(),
+        });
+        self.push_generation_log(String::from("后台开始准备翻译与阅读各部分题目。"));
+
+        std::thread::spawn(move || {
+            let queue = [
+                TypeChoice::Translation,
+                TypeChoice::BankedCloze,
+                TypeChoice::LongReading,
+                TypeChoice::Careful1,
+                TypeChoice::Careful2,
+            ];
+            for type_choice in queue {
+                let mut attempt = 0usize;
+                loop {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    attempt += 1;
+                    let _ = tx.send(MockExamGenerationMessage::Progress {
+                        type_choice,
+                        message: format!("正在生成 {}。", type_choice.label()),
+                    });
+                    match backend.generate(level, type_choice) {
+                        Ok(response) => {
+                            let _ = tx.send(MockExamGenerationMessage::Ready {
+                                type_choice,
+                                question_set: response.question_set,
+                            });
+                            break;
+                        }
+                        Err(error) => {
+                            let _ = tx.send(MockExamGenerationMessage::Retry {
+                                type_choice,
+                                attempt,
+                                error: error.to_string(),
+                            });
+                            std::thread::sleep(Duration::from_secs(2));
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(MockExamGenerationMessage::Finished);
+        });
+        Ok(())
+    }
+
     fn push_generation_log(&mut self, message: String) {
         if is_generation_heartbeat(&message) {
             if let Some(last) = self.generation_log.last_mut() {
@@ -2507,10 +3655,18 @@ impl YueJieRustApp {
     }
 
     fn start_submission(&mut self) -> Result<()> {
+        self.start_submission_internal(true)
+    }
+
+    fn start_submission_internal(&mut self, reset_retry: bool) -> Result<()> {
         let Some(practice) = self.practice.clone() else {
             return Ok(());
         };
         let backend = BackendBridge::new()?;
+        self.submission_context = SubmissionContext::Practice;
+        if reset_retry {
+            self.submission_retry_count = 0;
+        }
         self.submission_error_message = None;
         self.submission_sequence = self.submission_sequence.wrapping_add(1);
         let job_id = self.submission_sequence;
@@ -2527,7 +3683,11 @@ impl YueJieRustApp {
             ),
             response_word_count,
         );
-        self.submission_log = vec![self.submission_message.clone()];
+        if reset_retry || self.submission_log.is_empty() {
+            self.submission_log = vec![self.submission_message.clone()];
+        } else {
+            self.push_submission_log(self.submission_message.clone());
+        }
         self.submitting_task = Some(SubmittingTask {
             job_id,
             started_at: Instant::now(),
@@ -2553,6 +3713,178 @@ impl YueJieRustApp {
                 });
             }
         });
+        Ok(())
+    }
+
+    fn submit_current_mock_exam_section(&mut self) -> Result<()> {
+        let Some(session) = &mut self.mock_exam_session else {
+            return Ok(());
+        };
+        let active_type = session.active_section;
+        let Some(section) = session.active_section_mut() else {
+            return Ok(());
+        };
+        if section.practice.question_set.questions.is_empty() {
+            if section.practice.response_text().trim().is_empty() {
+                self.status_line = String::from("当前作答区为空，请先输入内容后再提交。");
+                return Ok(());
+            }
+            if active_type == TypeChoice::Writing {
+                section.locked = true;
+                session.lock_writing();
+                if session.all_sections_ready() {
+                    session.switch_section(TypeChoice::Translation);
+                    self.status_line = String::from(
+                        "作文已提交并锁定，可自由切换其余题型继续完成模拟四六级考试。",
+                    );
+                } else {
+                    session.pause_for_waiting();
+                    self.generation_message = String::from("作文已提交，正在等待其余题目生成完成。");
+                    self.status_line = String::from(
+                        "作文已提交，其余题目仍在后台生成；等待页期间不计时。",
+                    );
+                    self.screen = Screen::MockExamWaiting;
+                }
+                return Ok(());
+            }
+        } else if section.practice.unanswered_count() > 0 && !section.practice.submit_confirm_pending {
+            section.practice.submit_confirm_pending = true;
+            self.status_line = format!(
+                "当前还有 {} 题未作答，再按一次 Ctrl+S / Enter 将保留现有答案。",
+                section.practice.unanswered_count()
+            );
+            return Ok(());
+        }
+        section.practice.submit_confirm_pending = false;
+        self.status_line = format!(
+            "{} 已保存当前答案，你可以继续切换其他题型或最终交卷。",
+            active_type.label()
+        );
+        Ok(())
+    }
+
+    fn build_mock_exam_sections_payload(session: &MockExamSession) -> Vec<Value> {
+        let ordered = [
+            TypeChoice::Writing,
+            TypeChoice::Translation,
+            TypeChoice::BankedCloze,
+            TypeChoice::LongReading,
+            TypeChoice::Careful1,
+            TypeChoice::Careful2,
+        ];
+        ordered
+            .iter()
+            .filter_map(|type_choice| session.section(*type_choice))
+            .map(|section| {
+                json!({
+                    "question_set_id": section.practice.question_set.id,
+                    "answers": section.practice.answers,
+                    "duration_seconds": session.current_section_elapsed_seconds(section.type_choice),
+                })
+            })
+            .collect()
+    }
+
+    fn submit_mock_exam(&mut self) -> Result<()> {
+        self.submit_mock_exam_internal(true)
+    }
+
+    fn submit_mock_exam_internal(&mut self, reset_retry: bool) -> Result<()> {
+        if let Some(existing) = &mut self.mock_exam_session {
+            existing.pause_for_waiting();
+        }
+        let Some(session) = self.mock_exam_session.clone() else {
+            return Ok(());
+        };
+        if reset_retry {
+            self.submission_retry_count = 0;
+        }
+        if !session.writing_locked {
+            if let Some(existing) = &mut self.mock_exam_session {
+                existing.resume_from_waiting();
+            }
+            self.status_line = String::from("模拟四六级考试第一步必须先提交作文，作文提交后才能整套交卷。");
+            return Ok(());
+        }
+        if !session.all_sections_ready() {
+            if let Some(existing) = &mut self.mock_exam_session {
+                existing.pause_for_waiting();
+            }
+            self.generation_message = String::from("其余题目尚未全部准备完毕，正在继续自动重试生成。");
+            self.status_line = String::from("其余题目尚未准备完毕，等待页期间不计时。");
+            self.screen = Screen::MockExamWaiting;
+            return Ok(());
+        }
+
+        let backend = BackendBridge::new()?;
+        let sections = Self::build_mock_exam_sections_payload(&session);
+        self.submission_context = SubmissionContext::MockExam;
+        self.submission_error_message = None;
+        self.submission_sequence = self.submission_sequence.wrapping_add(1);
+        let job_id = self.submission_sequence;
+        let (tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.submission_phase = String::from("boot");
+        self.submission_message = String::from("正在启动整套模拟四六级考试评分与总评流程。");
+        if reset_retry || self.submission_log.is_empty() {
+            self.submission_log = vec![self.submission_message.clone()];
+        } else {
+            self.push_submission_log(self.submission_message.clone());
+        }
+        self.mock_exam_submitting_task = Some(MockExamSubmittingTask {
+            job_id,
+            started_at: Instant::now(),
+            receiver: rx,
+            cancel_flag: cancel_flag.clone(),
+        });
+        self.generating_tick = 0;
+        self.screen = Screen::Submitting;
+
+        std::thread::spawn(move || {
+            if let Err(err) = backend.stream_submit_mock_exam(
+                session.level,
+                &session.started_at_iso,
+                session.elapsed_exam_seconds(),
+                &sections,
+                job_id,
+                tx.clone(),
+                cancel_flag,
+            ) {
+                let _ = tx.send(MockExamSubmissionMessage::Finished {
+                    job_id,
+                    result: Err(err.to_string()),
+                });
+            }
+        });
+        Ok(())
+    }
+
+    fn tick_mock_exam_session(&mut self) -> Result<()> {
+        let Some(session) = &mut self.mock_exam_session else {
+            return Ok(());
+        };
+        if matches!(self.screen, Screen::Submitting | Screen::MockExamReview) {
+            return Ok(());
+        }
+        if !session.writing_locked && session.writing_remaining_seconds() <= 0 {
+            session.writing_force_submitted = true;
+            session.lock_writing();
+            if session.all_sections_ready() {
+                session.switch_section(TypeChoice::Translation);
+                self.screen = Screen::Practice;
+                self.status_line = String::from("作文时间已到，系统已自动锁定作文并切换到下一部分。");
+            } else {
+                session.pause_for_waiting();
+                self.screen = Screen::MockExamWaiting;
+                self.status_line =
+                    String::from("作文时间已到，系统已自动提交作文；其余题目正在后台生成。");
+            }
+        }
+        if session.total_remaining_seconds() <= 0 && !session.final_force_submitted {
+            session.final_force_submitted = true;
+            self.status_line = String::from("整套模拟四六级考试时间已到，系统正在按当前答案自动交卷。");
+            self.submit_mock_exam()?;
+        }
         Ok(())
     }
 
@@ -2602,30 +3934,56 @@ impl YueJieRustApp {
 
     fn open_history(&mut self) -> Result<()> {
         self.history = self.backend.history()?.history;
+        self.mock_exam_history = self.backend.mock_exam_history()?.history;
         self.history_index = 0;
+        self.mock_exam_history_index = 0;
+        self.history_tab = if self.history.is_empty() && !self.mock_exam_history.is_empty() {
+            HistoryTab::MockExam
+        } else {
+            HistoryTab::Practice
+        };
         self.history_action_index = 0;
         self.pending_history_delete_attempt_id = None;
         self.screen = Screen::History;
         self.status_line = String::from(
-            "上下方向键切换，Enter 查看解析，R 重新作答，D 删除记录，滚轮可快速浏览。",
+            "Tab/1/2 切换普通刷题与模拟四六级考试历史；上下切换，Enter 查看详情。",
         );
         Ok(())
     }
 
     fn open_weakness(&mut self) -> Result<()> {
         self.weakness = self.backend.weakness()?.weakness;
+        self.mock_exam_weakness = self.backend.mock_exam_weakness()?.weakness;
+        self.vocabulary = self.backend.vocabulary()?.vocabulary;
         self.weakness_index = 0;
-        self.screen = Screen::Weakness;
-        self.status_line = String::from("上下方向键或鼠标选择总结，右侧查看薄弱项详情与维度分布。");
+        self.mock_exam_weakness_index = 0;
+        self.vocabulary_index = 0;
+        self.insights_tab = if !self.weakness.is_empty() {
+            InsightsTab::PracticeWeakness
+        } else if !self.mock_exam_weakness.is_empty() {
+            InsightsTab::MockExamWeakness
+        } else {
+            InsightsTab::Vocabulary
+        };
+        self.screen = Screen::Insights;
+        self.status_line = String::from("左右/Tab 或 1/2/3 切换普通弱势、模拟四六级考试弱势与词汇表。");
         Ok(())
     }
 
     fn open_vocabulary(&mut self) -> Result<()> {
-        self.vocabulary = self.backend.vocabulary()?.vocabulary;
-        self.vocabulary_index = 0;
-        self.screen = Screen::Vocabulary;
-        self.status_line = String::from("上下方向键或鼠标选择词汇，右侧查看释义、频次、错题关联与例句。");
-        Ok(())
+        self.open_weakness()
+    }
+
+    fn toggle_history_tab(&mut self, code: KeyCode) {
+        self.history_tab = match code {
+            KeyCode::Char('1') => HistoryTab::Practice,
+            KeyCode::Char('2') => HistoryTab::MockExam,
+            _ => match self.history_tab {
+                HistoryTab::Practice => HistoryTab::MockExam,
+                HistoryTab::MockExam => HistoryTab::Practice,
+            },
+        };
+        self.history_action_index = 0;
     }
 
     fn open_settings(&mut self) -> Result<()> {
@@ -2702,12 +4060,16 @@ impl YueJieRustApp {
             Screen::Review => self.draw_review(frame, area, palette),
             Screen::Weakness => self.draw_weakness(frame, area, palette),
             Screen::Vocabulary => self.draw_vocabulary(frame, area, palette),
+            Screen::Insights => self.draw_insights(frame, area, palette),
+            Screen::MockExamWaiting => self.draw_mock_exam_waiting(frame, area, palette),
+            Screen::MockExamReview => self.draw_mock_exam_review(frame, area, palette),
             Screen::Settings => self.draw_settings(frame, area, palette),
         }
     }
 
     fn draw_home(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
         let total_attempts = self.overview.total_attempts;
+        let total_mock_exams = self.overview.total_mock_exams;
         let total_cet4 = self.overview.total_cet4;
         let total_cet6 = self.overview.total_cet6;
         let recent_performance_percent = self.overview.recent_performance_percent;
@@ -2726,6 +4088,8 @@ impl YueJieRustApp {
             .unwrap_or_else(|| "薄弱项暂无更新".to_string());
         let performance_series = self.overview.recent_performance_series.clone();
         let pace_series = self.overview.recent_pace_series.clone();
+        let mock_exam_score_series = self.overview.recent_mock_exam_score_series.clone();
+        let mock_exam_pace_series = self.overview.recent_mock_exam_pace_series.clone();
         let outer = centered_rect(95, 94, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -2804,6 +4168,7 @@ impl YueJieRustApp {
         frame.render_widget(
             Paragraph::new(Text::from(vec![
                 Line::from(format!("累计刷题：{} 题", total_attempts)),
+                Line::from(format!("累计模拟四六级考试：{} 套", total_mock_exams)),
                 Line::from(format!("最常练题型：{}", most_common_type_label)),
                 Line::from(format!(
                     "原始均值：{} / {}",
@@ -2841,7 +4206,7 @@ impl YueJieRustApp {
             palette,
             "总刷题数",
             &format!("{}", total_attempts),
-            &format!("四级 {} / 六级 {}", total_cet4, total_cet6),
+            &format!("四级 {} / 六级 {} · 模考 {}", total_cet4, total_cet6, total_mock_exams),
             None,
         );
         self.draw_metric_box(
@@ -2901,7 +4266,9 @@ impl YueJieRustApp {
             palette,
             "表现指数走势",
             &performance_series,
+            Some(&mock_exam_score_series),
             palette.success,
+            palette.accent,
             TrendMetric::Index,
             Some(100.0),
         );
@@ -2911,7 +4278,9 @@ impl YueJieRustApp {
             palette,
             "节奏匹配走势",
             &pace_series,
+            Some(&mock_exam_pace_series),
             palette.warning,
+            palette.accent,
             TrendMetric::Index,
             Some(100.0),
         );
@@ -2937,9 +4306,9 @@ impl YueJieRustApp {
 
         let menu_items = [
             ("开始刷题", "进入等级与题型选择", Action::HomeMenu(0)),
-            ("刷题历史", "查看过往记录与复盘", Action::HomeMenu(1)),
-            ("我的薄弱项", "查看动态能力总结", Action::HomeMenu(2)),
-            ("词汇表", "浏览高频重点词汇", Action::HomeMenu(3)),
+            ("模拟四六级考试", "先完成作文，其余部分后台生成", Action::HomeMenu(1)),
+            ("刷题历史", "普通刷题 / 模拟四六级考试历史", Action::HomeMenu(2)),
+            ("能力与词汇", "普通弱势 / 模拟四六级考试弱势 / 词汇表", Action::HomeMenu(3)),
             ("设置", "主题、背景与配色", Action::HomeMenu(4)),
             ("退出", "安全退出程序", Action::HomeMenu(5)),
         ];
@@ -3011,9 +4380,20 @@ impl YueJieRustApp {
             ])
             .split(outer);
         let header = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled("选择等级", title_style(palette))),
             Line::from(Span::styled(
-                "左右方向键或鼠标点击切换，Enter 确认。",
+                if self.home_mode == HomeMode::MockExam {
+                    "选择模拟四六级考试等级"
+                } else {
+                    "选择等级"
+                },
+                title_style(palette),
+            )),
+            Line::from(Span::styled(
+                if self.home_mode == HomeMode::MockExam {
+                    "左右方向键或鼠标点击切换，Enter 后将先生成作文。"
+                } else {
+                    "左右方向键或鼠标点击切换，Enter 确认。"
+                },
                 Style::default().fg(palette.muted),
             )),
         ]))
@@ -3529,21 +4909,38 @@ impl YueJieRustApp {
     }
 
     fn draw_practice(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
-        let Some(practice) = self.practice.clone() else {
-            return;
+        let practice = if let Some(session) = &self.mock_exam_session {
+            let Some(section) = session.active_section() else {
+                return;
+            };
+            section.practice.clone()
+        } else {
+            let Some(practice) = self.practice.clone() else {
+                return;
+            };
+            practice
         };
         let root = centered_rect(98, 94, area);
+        let header_height = if self.mock_exam_session.is_some() { 7 } else { 5 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(20)])
+            .constraints([Constraint::Length(header_height), Constraint::Min(20)])
             .split(root);
-        self.draw_practice_header(frame, chunks[0], palette, &practice);
+        if let Some(session) = self.mock_exam_session.clone() {
+            self.draw_mock_exam_header(frame, chunks[0], palette, &session, &practice);
+        } else {
+            self.draw_practice_header(frame, chunks[0], palette, &practice);
+        }
         if practice.question_set.questions.is_empty() {
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(24), Constraint::Min(60)])
                 .split(chunks[1]);
-            self.draw_practice_sidebar(frame, columns[0], palette, &practice);
+            if let Some(session) = self.mock_exam_session.clone() {
+                self.draw_mock_exam_sidebar(frame, columns[0], palette, &session, &practice);
+            } else {
+                self.draw_practice_sidebar(frame, columns[0], palette, &practice);
+            }
             self.draw_subjective_panel(frame, columns[1], palette, &practice);
         } else {
             let columns = Layout::default()
@@ -3561,10 +4958,300 @@ impl YueJieRustApp {
                 ])
                 .split(chunks[1]);
 
-            self.draw_practice_sidebar(frame, columns[0], palette, &practice);
+            if let Some(session) = self.mock_exam_session.clone() {
+                self.draw_mock_exam_sidebar(frame, columns[0], palette, &session, &practice);
+            } else {
+                self.draw_practice_sidebar(frame, columns[0], palette, &practice);
+            }
             self.draw_passage_panel(frame, columns[1], palette, &practice);
             self.draw_answer_panel(frame, columns[2], palette, &practice);
         }
+    }
+
+    fn draw_mock_exam_header(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: Palette,
+        session: &MockExamSession,
+        practice: &PracticeState,
+    ) {
+        let parts = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(area);
+        let stage_text = if !session.writing_locked {
+            format!("作文阶段 · 剩余 {}", seconds_to_text(session.writing_remaining_seconds()))
+        } else if session.is_waiting() {
+            String::from("作文已锁定 · 其余题目后台生成中 · 当前等待不计时")
+        } else {
+            format!("整套剩余 {}", seconds_to_text(session.total_remaining_seconds()))
+        };
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled(
+                    format!(
+                        "{} 模拟四六级考试 · {}",
+                        session.level.label(),
+                        format_question_label(
+                            &practice.question_set.question_type,
+                            practice.question_set.slot
+                        )
+                    ),
+                    title_style(palette),
+                )),
+                Line::from(stage_text),
+                Line::from(format!(
+                    "已准备 {}/6 部分 · 当前可用 {}",
+                    session.sections.len(),
+                    session.active_section.label()
+                )),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("模拟四六级考试进行中", palette)),
+            parts[0],
+        );
+
+        frame.render_widget(simple_block("题型切换", palette), parts[1]);
+        let inner = simple_block("题型切换", palette).inner(parts[1]);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Length(2)])
+            .split(inner);
+        let row1 = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+            ])
+            .split(rows[0]);
+        let row2 = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+            ])
+            .split(rows[1]);
+        let buttons = [
+            (TypeChoice::Writing, row1[0]),
+            (TypeChoice::Translation, row1[1]),
+            (TypeChoice::BankedCloze, row1[2]),
+            (TypeChoice::LongReading, row2[0]),
+            (TypeChoice::Careful1, row2[1]),
+            (TypeChoice::Careful2, row2[2]),
+        ];
+        for (type_choice, rect) in buttons {
+            let ready = session.is_ready(type_choice);
+            let locked = session.is_section_locked(type_choice);
+            let title = if locked {
+                format!("{} 锁定", type_choice.label())
+            } else if ready {
+                type_choice.label().to_string()
+            } else {
+                format!("{} 生成中", type_choice.label())
+            };
+            self.draw_action_button(
+                frame,
+                rect,
+                palette,
+                &title,
+                session.active_section == type_choice,
+                Action::MockExamSelectSection(type_choice),
+            );
+        }
+    }
+
+    fn draw_mock_exam_sidebar(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: Palette,
+        session: &MockExamSession,
+        practice: &PracticeState,
+    ) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(8),
+                Constraint::Length(4),
+                Constraint::Length(6),
+                Constraint::Length(3),
+                Constraint::Min(3),
+            ])
+            .split(area);
+
+        frame.render_widget(
+            Paragraph::new(Text::from(big_timer_lines(&seconds_to_text(
+                session.total_remaining_seconds(),
+            ))))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(simple_block("EXAM", palette)),
+            chunks[0],
+        );
+
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(format!(
+                    "作文剩余 {}",
+                    if session.writing_locked {
+                        "已锁定".to_string()
+                    } else {
+                        seconds_to_text(session.writing_remaining_seconds())
+                    }
+                )),
+                Line::from(format!(
+                    "完成 {} / {}",
+                    session.completed_sections(),
+                    session.total_sections()
+                )),
+            ]))
+            .block(simple_block("倒计时", palette)),
+            chunks[1],
+        );
+
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(format!("当前：{}", practice.question_set.topic)),
+                Line::from(format!(
+                    "题型：{}",
+                    format_question_label(
+                        &practice.question_set.question_type,
+                        practice.question_set.slot
+                    )
+                )),
+                Line::from(format!("已就绪：{}", session.sections.len())),
+                Line::from(format!("待生成：{}", session.pending_types.len())),
+                Line::from(format!("重试中：{}", session.failed_types.len())),
+                Line::from(if session.writing_locked {
+                    "F2-F6 可快速切换题型".to_string()
+                } else {
+                    "先完成作文，其余题型后台生成".to_string()
+                }),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("状态", palette)),
+            chunks[2],
+        );
+
+        self.draw_action_button(
+            frame,
+            chunks[3],
+            palette,
+            if session.writing_locked {
+                "最终交卷"
+            } else {
+                "提交作文"
+            },
+            false,
+            if session.writing_locked {
+                Action::MockExamSubmit
+            } else {
+                Action::SubmitPractice
+            },
+        );
+
+        frame.render_widget(
+            Paragraph::new(if session.writing_locked {
+                "Ctrl+S / 按钮交卷 | F1-F6 切换题型 | 等待页不计时"
+            } else {
+                "Ctrl+S 提交作文 | 作文 30 分钟后自动锁定"
+            })
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false })
+            .block(simple_block("", palette)),
+            chunks[4],
+        );
+    }
+
+    fn draw_mock_exam_waiting(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
+        let outer = centered_rect(86, 74, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Length(4),
+                Constraint::Min(14),
+                Constraint::Length(1),
+            ])
+            .split(outer);
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("模拟四六级考试等待页", title_style(palette))),
+                Line::from(Span::styled(
+                    "作文已提交，其余题目正在后台自动重试生成；本页等待时间不计入模拟四六级考试总时长。",
+                    Style::default().fg(palette.muted),
+                )),
+            ]))
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
+            chunks[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("AI 仍在准备", title_style(palette))),
+                Line::from(format!(
+                    "{}  {}",
+                    generation_orbit_frame(self.generating_tick),
+                    generation_wave_frame(self.generating_tick)
+                )),
+            ]))
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
+            chunks[1],
+        );
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(chunks[2]);
+        let mut left_lines = vec![
+            Line::from(Span::styled("后台状态", title_style(palette))),
+            Line::from(""),
+        ];
+        if let Some(session) = &self.mock_exam_session {
+            for type_choice in [
+                TypeChoice::Translation,
+                TypeChoice::BankedCloze,
+                TypeChoice::LongReading,
+                TypeChoice::Careful1,
+                TypeChoice::Careful2,
+            ] {
+                let label = if session.is_ready(type_choice) {
+                    format!("{}：已就绪", type_choice.label())
+                } else if session.failed_types.contains(&type_choice) {
+                    format!("{}：正在重试", type_choice.label())
+                } else {
+                    format!("{}：生成中", type_choice.label())
+                };
+                left_lines.push(Line::from(label));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(left_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("部分进度", palette)),
+            body[0],
+        );
+        let mut log_lines = vec![
+            Line::from(Span::styled("最近日志", title_style(palette))),
+            Line::from(""),
+        ];
+        for item in &self.generation_log {
+            log_lines.push(Line::from(format!("- {}", item)));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(log_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("生成日志", palette)),
+            body[1],
+        );
+        self.draw_status_line(frame, chunks[3], palette);
     }
 
     fn draw_practice_header(
@@ -3928,6 +5615,7 @@ impl YueJieRustApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4),
+                Constraint::Length(3),
                 Constraint::Length(5),
                 Constraint::Min(10),
                 Constraint::Length(5),
@@ -3937,7 +5625,7 @@ impl YueJieRustApp {
         let header = Paragraph::new(Text::from(vec![
             Line::from(Span::styled("刷题历史", title_style(palette))),
             Line::from(Span::styled(
-                "这里保留每次训练记录；上下切换记录，左右切换操作，Enter 进入解析。",
+                "Tab/1/2 切换普通刷题与模拟四六级考试；上下切换记录，Enter 进入详情。",
                 Style::default().fg(palette.muted),
             )),
         ]))
@@ -3945,15 +5633,28 @@ impl YueJieRustApp {
         .block(simple_block("", palette));
         frame.render_widget(header, chunks[0]);
 
-        let recent_items = self.history.iter().take(5).collect::<Vec<_>>();
-        let recent_count = recent_items.len().max(1) as f64;
-        let recent_accuracy =
-            recent_items.iter().map(|item| item.accuracy).sum::<f64>() / recent_count;
-        let recent_duration = recent_items
-            .iter()
-            .map(|item| item.duration_seconds)
-            .sum::<i64>()
-            / recent_items.len().max(1) as i64;
+        let tab_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[1]);
+        self.draw_action_button(
+            frame,
+            tab_chunks[0],
+            palette,
+            "普通刷题",
+            self.history_tab == HistoryTab::Practice,
+            Action::OpenHistoryTab(0),
+        );
+        self.draw_action_button(
+            frame,
+            tab_chunks[1],
+            palette,
+            "模拟四六级考试",
+            self.history_tab == HistoryTab::MockExam,
+            Action::OpenHistoryTab(1),
+        );
+
+        let practice_tab = self.history_tab == HistoryTab::Practice;
         let metric_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -3961,48 +5662,104 @@ impl YueJieRustApp {
                 Constraint::Ratio(1, 3),
                 Constraint::Ratio(1, 3),
             ])
-            .split(chunks[1]);
-        self.draw_metric_box(
-            frame,
-            metric_chunks[0],
-            palette,
-            "历史总数",
-            &format!("{}", self.history.len()),
-            "已保存训练记录",
-            None,
-        );
-        self.draw_metric_box(
-            frame,
-            metric_chunks[1],
-            palette,
-            "近 5 次正确率",
-            &format!("{:.1}%", recent_accuracy * 100.0),
-            accuracy_band(recent_accuracy),
-            Some(recent_accuracy),
-        );
-        self.draw_metric_box(
-            frame,
-            metric_chunks[2],
-            palette,
-            "近 5 次用时",
-            &seconds_to_text(recent_duration),
-            "平均作答时长",
-            Some((recent_duration as f64 / 2400.0).clamp(0.0, 1.0)),
-        );
+            .split(chunks[2]);
+        if practice_tab {
+            let recent_items = self.history.iter().take(5).collect::<Vec<_>>();
+            let recent_count = recent_items.len().max(1) as f64;
+            let recent_accuracy =
+                recent_items.iter().map(|item| item.accuracy).sum::<f64>() / recent_count;
+            let recent_duration = recent_items
+                .iter()
+                .map(|item| item.duration_seconds)
+                .sum::<i64>()
+                / recent_items.len().max(1) as i64;
+            self.draw_metric_box(
+                frame,
+                metric_chunks[0],
+                palette,
+                "历史总数",
+                &format!("{}", self.history.len()),
+                "普通刷题记录",
+                None,
+            );
+            self.draw_metric_box(
+                frame,
+                metric_chunks[1],
+                palette,
+                "近 5 次正确率",
+                &format!("{:.1}%", recent_accuracy * 100.0),
+                accuracy_band(recent_accuracy),
+                Some(recent_accuracy),
+            );
+            self.draw_metric_box(
+                frame,
+                metric_chunks[2],
+                palette,
+                "近 5 次用时",
+                &seconds_to_text(recent_duration),
+                "平均作答时长",
+                Some((recent_duration as f64 / 2400.0).clamp(0.0, 1.0)),
+            );
+        } else {
+            let recent_items = self.mock_exam_history.iter().take(5).collect::<Vec<_>>();
+            let recent_count = recent_items.len().max(1) as f64;
+            let recent_score =
+                recent_items.iter().map(|item| item.total_score).sum::<f64>() / recent_count;
+            let recent_duration = recent_items
+                .iter()
+                .map(|item| item.duration_seconds)
+                .sum::<i64>()
+                / recent_items.len().max(1) as i64;
+            self.draw_metric_box(
+                frame,
+                metric_chunks[0],
+                palette,
+                "历史总数",
+                &format!("{}", self.mock_exam_history.len()),
+                "模拟四六级考试记录",
+                None,
+            );
+            self.draw_metric_box(
+                frame,
+                metric_chunks[1],
+                palette,
+                "近 5 次总分",
+                &format!("{:.1}/100", recent_score),
+                "模拟四六级考试综合分",
+                Some((recent_score / 100.0).clamp(0.0, 1.0)),
+            );
+            self.draw_metric_box(
+                frame,
+                metric_chunks[2],
+                palette,
+                "近 5 次用时",
+                &seconds_to_text(recent_duration),
+                "整套作答时长",
+                Some((recent_duration as f64 / 6000.0).clamp(0.0, 1.0)),
+            );
+        }
 
-        if self.history.is_empty() {
+        if practice_tab && self.history.is_empty() {
             frame.render_widget(
                 Paragraph::new("还没有历史记录。\n先去开始刷题，完成一次作答后这里会自动出现复盘档案。")
                     .alignment(Alignment::Center)
                     .wrap(Wrap { trim: false })
                     .block(simple_block("历史为空", palette)),
-                chunks[2],
+                chunks[3],
             );
-        } else {
+        } else if !practice_tab && self.mock_exam_history.is_empty() {
+            frame.render_widget(
+                Paragraph::new("还没有模拟四六级考试记录。\n完成一次模拟四六级考试后，这里会展示整套得分、用时与总评。")
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
+                    .block(simple_block("历史为空", palette)),
+                chunks[3],
+            );
+        } else if practice_tab {
             let body = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[2]);
+                .split(chunks[3]);
             let list_inner = simple_block("历史记录", palette).inner(body[0]);
             let items: Vec<ListItem> = self
                 .history
@@ -4114,50 +5871,176 @@ impl YueJieRustApp {
                 .block(simple_block("当前记录", palette)),
                 detail_chunks[1],
             );
+        } else {
+            let body = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(chunks[3]);
+            let list_inner = simple_block("模拟四六级考试历史", palette).inner(body[0]);
+            let items: Vec<ListItem> = self
+                .mock_exam_history
+                .iter()
+                .map(|item| {
+                    ListItem::new(vec![
+                        Line::from(Span::styled(
+                            format!("{} 模拟四六级考试", format_level_label(&item.level)),
+                            Style::default()
+                                .fg(palette.text)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(format!(
+                            "{} | 总分 {:.1}/100 | {}",
+                            format_iso_brief(&item.submitted_at),
+                            item.total_score,
+                            seconds_to_text(item.duration_seconds)
+                        )),
+                        Line::from(Span::styled(
+                            format!("考试 ID：{}", item.exam_id),
+                            Style::default().fg(palette.muted),
+                        )),
+                    ])
+                })
+                .collect();
+            let mut state = ListState::default();
+            state.select(Some(self.mock_exam_history_index));
+            let list = List::new(items)
+                .block(simple_block("模拟四六级考试历史", palette))
+                .highlight_style(interactive_selected_style(palette));
+            frame.render_stateful_widget(list, body[0], &mut state);
+            let row_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Length(3); self.mock_exam_history.len()])
+                .split(list_inner);
+            for (index, rect) in row_chunks.iter().enumerate() {
+                self.click_areas.push(ClickArea {
+                    rect: *rect,
+                    action: Action::MockExamHistorySelect(index),
+                });
+            }
+
+            let selected = &self.mock_exam_history[self.mock_exam_history_index];
+            let detail_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(6), Constraint::Min(9)])
+                .split(body[1]);
+            frame.render_widget(
+                Paragraph::new(Text::from(vec![
+                    Line::from(format!(
+                        "总分    {}  {:.1}/100",
+                        mini_ratio_bar((selected.total_score / 100.0).clamp(0.0, 1.0), 10),
+                        selected.total_score
+                    )),
+                    Line::from(format!(
+                        "用时    {}  {}",
+                        mini_ratio_bar(
+                            (selected.duration_seconds as f64 / 6000.0).clamp(0.0, 1.0),
+                            10
+                        ),
+                        seconds_to_text(selected.duration_seconds)
+                    )),
+                    Line::from(format!("等级    {}", format_level_label(&selected.level))),
+                ]))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("表现概览", palette)),
+                detail_chunks[0],
+            );
+            frame.render_widget(
+                Paragraph::new(Text::from(vec![
+                    Line::from(format!("考试 ID：{}", selected.exam_id)),
+                    Line::from(format!("等级：{}", format_level_label(&selected.level))),
+                    Line::from(format!("开始：{}", format_iso_brief(&selected.started_at))),
+                    Line::from(format!("结束：{}", format_iso_brief(&selected.submitted_at))),
+                    Line::from(format!(
+                        "总分：{:.1}/100 | 用时 {}",
+                        selected.total_score,
+                        seconds_to_text(selected.duration_seconds)
+                    )),
+                    Line::from(""),
+                    Line::from("Enter 查看整套总评与分项表现，D 删除该记录。"),
+                ]))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("当前记录", palette)),
+                detail_chunks[1],
+            );
         }
 
-        let buttons = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-                Constraint::Ratio(1, 4),
-            ])
-            .split(chunks[3]);
-        self.draw_action_button(
-            frame,
-            buttons[0],
-            palette,
-            "查看解析",
-            self.history_action_index == 0,
-            Action::HistoryReview(self.history_index),
-        );
-        self.draw_action_button(
-            frame,
-            buttons[1],
-            palette,
-            "重新作答",
-            self.history_action_index == 1,
-            Action::HistoryRedo(self.history_index),
-        );
-        self.draw_action_button(
-            frame,
-            buttons[2],
-            palette,
-            "删除记录",
-            self.history_action_index == 2,
-            Action::HistoryDelete(self.history_index),
-        );
-        self.draw_action_button(
-            frame,
-            buttons[3],
-            palette,
-            "返回",
-            self.history_action_index == 3,
-            Action::BackHistory,
-        );
-        self.draw_status_line(frame, chunks[4], palette);
+        if practice_tab {
+            let buttons = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Ratio(1, 4),
+                    Constraint::Ratio(1, 4),
+                    Constraint::Ratio(1, 4),
+                    Constraint::Ratio(1, 4),
+                ])
+                .split(chunks[4]);
+            self.draw_action_button(
+                frame,
+                buttons[0],
+                palette,
+                "查看解析",
+                self.history_action_index == 0,
+                Action::HistoryReview(self.history_index),
+            );
+            self.draw_action_button(
+                frame,
+                buttons[1],
+                palette,
+                "重新作答",
+                self.history_action_index == 1,
+                Action::HistoryRedo(self.history_index),
+            );
+            self.draw_action_button(
+                frame,
+                buttons[2],
+                palette,
+                "删除记录",
+                self.history_action_index == 2,
+                Action::HistoryDelete(self.history_index),
+            );
+            self.draw_action_button(
+                frame,
+                buttons[3],
+                palette,
+                "返回",
+                self.history_action_index == 3,
+                Action::BackHistory,
+            );
+        } else {
+            let buttons = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                    Constraint::Ratio(1, 3),
+                ])
+                .split(chunks[4]);
+            self.draw_action_button(
+                frame,
+                buttons[0],
+                palette,
+                "查看总评",
+                self.history_action_index == 0,
+                Action::MockExamHistoryReview(self.mock_exam_history_index),
+            );
+            self.draw_action_button(
+                frame,
+                buttons[1],
+                palette,
+                "删除记录",
+                self.history_action_index == 1,
+                Action::MockExamHistoryDelete(self.mock_exam_history_index),
+            );
+            self.draw_action_button(
+                frame,
+                buttons[2],
+                palette,
+                "返回",
+                self.history_action_index == 2,
+                Action::BackHistory,
+            );
+        }
+        self.draw_status_line(frame, chunks[5], palette);
     }
 
     fn draw_review(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
@@ -4723,6 +6606,519 @@ impl YueJieRustApp {
             Action::BackVocabulary,
         );
         self.draw_status_line(frame, chunks[3], palette);
+    }
+
+    fn draw_insights(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
+        let outer = centered_rect(94, 92, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(outer);
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("能力与词汇", title_style(palette))),
+                Line::from(Span::styled(
+                    "左右/Tab 或 1/2/3 切换普通薄弱项、模拟四六级考试薄弱项与词汇表。",
+                    Style::default().fg(palette.muted),
+                )),
+            ]))
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
+            chunks[0],
+        );
+        let tabs = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+            ])
+            .split(chunks[1]);
+        self.draw_action_button(
+            frame,
+            tabs[0],
+            palette,
+            "普通弱势",
+            self.insights_tab == InsightsTab::PracticeWeakness,
+            Action::OpenInsightsTab(0),
+        );
+        self.draw_action_button(
+            frame,
+            tabs[1],
+            palette,
+            "模拟四六级考试弱势",
+            self.insights_tab == InsightsTab::MockExamWeakness,
+            Action::OpenInsightsTab(1),
+        );
+        self.draw_action_button(
+            frame,
+            tabs[2],
+            palette,
+            "词汇表",
+            self.insights_tab == InsightsTab::Vocabulary,
+            Action::OpenInsightsTab(2),
+        );
+
+        match self.insights_tab {
+            InsightsTab::PracticeWeakness => self.draw_weakness_content(frame, chunks[2], palette),
+            InsightsTab::MockExamWeakness => {
+                self.draw_mock_exam_weakness_content(frame, chunks[2], palette)
+            }
+            InsightsTab::Vocabulary => self.draw_vocabulary_content(frame, chunks[2], palette),
+        }
+        self.draw_action_button(
+            frame,
+            chunks[3],
+            palette,
+            "返回",
+            false,
+            Action::BackWeakness,
+        );
+        self.draw_status_line(frame, chunks[4], palette);
+    }
+
+    fn draw_weakness_content(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
+        if self.weakness.is_empty() {
+            frame.render_widget(
+                Paragraph::new("普通刷题的薄弱项还没有足够样本。\n继续做同题型训练后，这里会自动生成能力总结。")
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
+                    .block(simple_block("暂无数据", palette)),
+                area,
+            );
+            return;
+        }
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(area);
+        let list_inner = simple_block("普通刷题薄弱项", palette).inner(body[0]);
+        let items: Vec<ListItem> = self
+            .weakness
+            .iter()
+            .map(|item| {
+                let dimension_preview = parse_dimension_preview(&item.dimensions_json);
+                ListItem::new(vec![
+                    Line::from(format!(
+                        "{} | {}",
+                        format_iso_brief(&item.updated_at),
+                        format_question_label(&item.question_type, None)
+                    )),
+                    Line::from(item.summary.clone()),
+                    Line::from(dimension_preview),
+                ])
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(self.weakness_index));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(simple_block("总结列表", palette))
+                .highlight_style(interactive_selected_style(palette)),
+            body[0],
+            &mut state,
+        );
+        let row_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Length(3); self.weakness.len()])
+            .split(list_inner);
+        for (index, rect) in row_chunks.iter().enumerate() {
+            self.click_areas.push(ClickArea {
+                rect: *rect,
+                action: Action::WeaknessSelect(index),
+            });
+        }
+
+        let selected = &self.weakness[self.weakness_index];
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(format!("更新时间：{}", format_iso_brief(&selected.updated_at))),
+                Line::from(format!("等级：{}", format_level_label(&selected.level))),
+                Line::from(format!(
+                    "题型：{}",
+                    format_question_label(&selected.question_type, None)
+                )),
+                Line::from(format!("样本数：{}", selected.based_on_attempt_count)),
+                Line::from(""),
+                Line::from(selected.summary.clone()),
+                Line::from(""),
+                Line::from(parse_dimension_preview(&selected.dimensions_json)),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("当前分析", palette)),
+            body[1],
+        );
+    }
+
+    fn draw_mock_exam_weakness_content(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        palette: Palette,
+    ) {
+        if self.mock_exam_weakness.is_empty() {
+            frame.render_widget(
+                Paragraph::new("模拟四六级考试薄弱项还没有足够样本。\n完成至少几次模拟四六级考试后，这里会生成整套能力总结。")
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
+                    .block(simple_block("暂无数据", palette)),
+                area,
+            );
+            return;
+        }
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(area);
+        let list_inner = simple_block("模拟四六级考试薄弱项", palette).inner(body[0]);
+        let items: Vec<ListItem> = self
+            .mock_exam_weakness
+            .iter()
+            .map(|item| {
+                ListItem::new(vec![
+                    Line::from(format!(
+                        "{} | {}",
+                        format_iso_brief(&item.updated_at),
+                        format_level_label(&item.level)
+                    )),
+                    Line::from(item.summary.clone()),
+                    Line::from(parse_dimension_preview(&item.dimensions_json)),
+                ])
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(self.mock_exam_weakness_index));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(simple_block("总结列表", palette))
+                .highlight_style(interactive_selected_style(palette)),
+            body[0],
+            &mut state,
+        );
+        let row_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Length(3); self.mock_exam_weakness.len()])
+            .split(list_inner);
+        for (index, rect) in row_chunks.iter().enumerate() {
+            self.click_areas.push(ClickArea {
+                rect: *rect,
+                action: Action::MockWeaknessSelect(index),
+            });
+        }
+
+        let selected = &self.mock_exam_weakness[self.mock_exam_weakness_index];
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(format!("更新时间：{}", format_iso_brief(&selected.updated_at))),
+                Line::from(format!("等级：{}", format_level_label(&selected.level))),
+                Line::from(format!("样本数：{}", selected.based_on_exam_count)),
+                Line::from(""),
+                Line::from(selected.summary.clone()),
+                Line::from(""),
+                Line::from(parse_dimension_preview(&selected.dimensions_json)),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("当前分析", palette)),
+            body[1],
+        );
+    }
+
+    fn draw_vocabulary_content(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
+        if self.vocabulary.is_empty() {
+            frame.render_widget(
+                Paragraph::new("还没有词汇数据。\n先完成练习和复盘，系统会自动累计高频重点词汇。")
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false })
+                    .block(simple_block("暂无数据", palette)),
+                area,
+            );
+            return;
+        }
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(area);
+        let list_inner = simple_block("词汇累计", palette).inner(body[0]);
+        let items: Vec<ListItem> = self
+            .vocabulary
+            .iter()
+            .map(|item| {
+                ListItem::new(vec![
+                    Line::from(format!(
+                        "{} ({}) | 频次 {} | 错题关联 {}",
+                        item.surface_form,
+                        item.level_hint,
+                        item.frequency_score,
+                        item.error_related_score
+                    )),
+                    Line::from(item.meaning_zh.clone()),
+                ])
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(self.vocabulary_index));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(simple_block("词汇累计", palette))
+                .highlight_style(interactive_selected_style(palette)),
+            body[0],
+            &mut state,
+        );
+        let row_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Length(2); self.vocabulary.len()])
+            .split(list_inner);
+        for (index, rect) in row_chunks.iter().enumerate() {
+            self.click_areas.push(ClickArea {
+                rect: *rect,
+                action: Action::VocabularySelect(index),
+            });
+        }
+
+        let selected = &self.vocabulary[self.vocabulary_index];
+        let example = if selected.example_en.trim().is_empty() {
+            "暂无例句".to_string()
+        } else {
+            selected.example_en.clone()
+        };
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(format!("词元：{}", selected.lemma)),
+                Line::from(format!("词形：{}", selected.surface_form)),
+                Line::from(format!("等级：{}", selected.level_hint)),
+                Line::from(format!("释义：{}", selected.meaning_zh)),
+                Line::from(format!("频次：{}", selected.frequency_score)),
+                Line::from(format!("错题关联：{}", selected.error_related_score)),
+                Line::from(format!("最近出现：{}", format_iso_brief(&selected.last_seen_at))),
+                Line::from(""),
+                Line::from(example),
+            ]))
+            .wrap(Wrap { trim: false })
+            .block(simple_block("词汇详情", palette)),
+            body[1],
+        );
+    }
+
+    fn draw_mock_exam_review(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
+        let Some(review) = self.mock_exam_review.clone() else {
+            return;
+        };
+        let outer = centered_rect(96, 96, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Length(5),
+                Constraint::Min(16),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(outer);
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::from(Span::styled("模拟四六级考试总评", title_style(palette))),
+                Line::from(format!(
+                    "{} · 总分 {:.1}/100 · 用时 {}",
+                    format_level_label(&review.level),
+                    review.total_score,
+                    seconds_to_text(review.duration_seconds)
+                )),
+            ]))
+            .alignment(Alignment::Center)
+            .block(simple_block("", palette)),
+            chunks[0],
+        );
+
+        let metric_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+            ])
+            .split(chunks[1]);
+        self.draw_metric_box(
+            frame,
+            metric_chunks[0],
+            palette,
+            "总分",
+            &format!("{:.1}/100", review.total_score),
+            "整套模拟四六级考试",
+            Some((review.total_score / 100.0).clamp(0.0, 1.0)),
+        );
+        self.draw_metric_box(
+            frame,
+            metric_chunks[1],
+            palette,
+            "用时",
+            &seconds_to_text(review.duration_seconds),
+            "总时长",
+            Some((review.duration_seconds as f64 / 6000.0).clamp(0.0, 1.0)),
+        );
+        self.draw_metric_box(
+            frame,
+            metric_chunks[2],
+            palette,
+            "弱势点",
+            &format!("{}", review.weakness_tags.len()),
+            "见下方总评",
+            None,
+        );
+
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(chunks[2]);
+        let mut left_lines = vec![
+            Line::from(Span::styled("分项得分", title_style(palette))),
+            Line::from(""),
+        ];
+        for (key, value) in &review.score_breakdown {
+            left_lines.push(Line::from(format!(
+                "{}：{:.1}",
+                format_mock_exam_section_key(key),
+                value
+            )));
+        }
+        left_lines.push(Line::from(""));
+        if review.recommendations.is_empty() {
+            left_lines.push(Line::from("暂无建议。"));
+        } else {
+            for item in &review.recommendations {
+                left_lines.push(Line::from(format!("• {}", item)));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(left_lines))
+                .wrap(Wrap { trim: false })
+                .block(simple_block("分数与建议", palette)),
+            body[0],
+        );
+
+        let mut right_lines = vec![
+            Line::from(Span::styled("整套复盘", title_style(palette))),
+            Line::from(""),
+            Line::from(review.summary.clone()),
+            Line::from(""),
+        ];
+        if review.weakness_tags.is_empty() {
+            right_lines.push(Line::from("暂无单独弱势标签。"));
+        } else {
+            right_lines.push(Line::from(format!(
+                "薄弱点：{}",
+                review
+                    .weakness_tags
+                    .iter()
+                    .map(|item| format_skill_label(item))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            )));
+            right_lines.push(Line::from(""));
+        }
+        right_lines.push(Line::from("各部分概览："));
+        right_lines.push(Line::from(""));
+        for section in &review.sections {
+            let section_label = format_question_label(&section.question_type, section.slot);
+            let section_score = if let Some(subjective) = &section.result.subjective_evaluation {
+                format!(
+                    "{:.1}/15 · 估算 {:.1} 分",
+                    subjective.score_15, subjective.estimated_reported_score
+                )
+            } else {
+                format!(
+                    "{}/{} · {:.1}%",
+                    section.result.correct_count,
+                    section.result.total_count,
+                    section.result.accuracy * 100.0
+                )
+            };
+            right_lines.push(Line::from(format!(
+                "{}  {}  ·  用时 {}",
+                section_label,
+                section_score,
+                seconds_to_text(section.result.duration_seconds),
+            )));
+            right_lines.push(Line::from(format!(
+                "  {}",
+                truncate_text(&section.result.summary, 88)
+            )));
+            if let Some(subjective) = &section.result.subjective_evaluation {
+                if !subjective.weakness_tags.is_empty() {
+                    right_lines.push(Line::from(format!(
+                        "  薄弱点：{}",
+                        subjective
+                            .weakness_tags
+                            .iter()
+                            .map(|item| format_skill_label(item))
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    )));
+                }
+                if !subjective.wrong_words.is_empty() {
+                    let sample = subjective
+                        .wrong_words
+                        .iter()
+                        .take(3)
+                        .map(|item| format!("{}→{}", item.original, item.corrected))
+                        .collect::<Vec<_>>()
+                        .join("，");
+                    right_lines.push(Line::from(format!("  错词：{}", sample)));
+                }
+                if !subjective.sentence_rewrites.is_empty() {
+                    right_lines.push(Line::from(format!(
+                        "  语病改写：{} 处，建议进入普通刷题继续针对性重写。",
+                        subjective.sentence_rewrites.len()
+                    )));
+                }
+            } else {
+                let wrong_items = section
+                    .result
+                    .question_results
+                    .iter()
+                    .filter(|item| !item.is_correct)
+                    .take(2)
+                    .collect::<Vec<_>>();
+                if wrong_items.is_empty() {
+                    right_lines.push(Line::from("  该部分当前未见明显失分点。"));
+                } else {
+                    for item in wrong_items {
+                        right_lines.push(Line::from(format!(
+                            "  失分：{} -> {}",
+                            blank_or_value(&item.user_answer),
+                            item.correct_answer
+                        )));
+                        right_lines.push(Line::from(format!(
+                            "  解析：{}",
+                            truncate_text(&item.explanation, 76)
+                        )));
+                    }
+                }
+            }
+            right_lines.push(Line::from(""));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(right_lines))
+                .wrap(Wrap { trim: false })
+                .scroll((self.review_detail_scroll, 0))
+                .block(simple_block("复盘详情（可滚动）", palette)),
+            body[1],
+        );
+
+        self.draw_action_button(
+            frame,
+            chunks[3],
+            palette,
+            "返回历史",
+            true,
+            Action::BackReview,
+        );
+        self.draw_status_line(frame, chunks[4], palette);
     }
 
     fn draw_settings(&mut self, frame: &mut Frame, area: Rect, palette: Palette) {
@@ -5798,7 +8194,9 @@ impl YueJieRustApp {
         palette: Palette,
         title: &str,
         series: &[f64],
+        overlay_series: Option<&[f64]>,
         color: Color,
+        overlay_color: Color,
         metric: TrendMetric,
         fixed_upper_bound: Option<f64>,
     ) {
@@ -5810,8 +8208,15 @@ impl YueJieRustApp {
         }
 
         let max_points = inner.width.saturating_sub(1) as usize;
-        let sampled = sample_series_for_width(series, max_points.max(1));
-        if sampled.is_empty() {
+        let mut sampled = sample_series_for_width(series, max_points.max(1));
+        let mut sampled_overlay = overlay_series
+            .map(|items| sample_series_for_width(items, max_points.max(1)))
+            .unwrap_or_default();
+        if sampled.is_empty() && !sampled_overlay.is_empty() {
+            sampled = sampled_overlay.clone();
+            sampled_overlay.clear();
+        }
+        if sampled.is_empty() && sampled_overlay.is_empty() {
             frame.render_widget(
                 Paragraph::new("暂无走势数据\n先开始训练，图表会自动累积最近记录。")
                     .alignment(Alignment::Center)
@@ -5830,13 +8235,31 @@ impl YueJieRustApp {
             .iter()
             .map(|(_, value)| *value)
             .fold(f64::NEG_INFINITY, f64::max);
+        let overlay_min = sampled_overlay
+            .iter()
+            .map(|(_, value)| *value)
+            .fold(f64::INFINITY, f64::min);
+        let overlay_max = sampled_overlay
+            .iter()
+            .map(|(_, value)| *value)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let all_min = if overlay_min.is_finite() {
+            min_sample.min(overlay_min)
+        } else {
+            min_sample
+        };
+        let all_max = if overlay_max.is_finite() {
+            max_sample.max(overlay_max)
+        } else {
+            max_sample
+        };
         let (lower, upper) = if let Some(bound) = fixed_upper_bound {
             (0.0, bound.max(1.0))
         } else {
-            let spread = (max_sample - min_sample).abs();
+            let spread = (all_max - all_min).abs();
             let padding = (spread * 0.2).max(1.0);
-            let lower = (min_sample - padding).max(0.0);
-            let upper = (max_sample + padding).max(lower + 1.0);
+            let lower = (all_min - padding).max(0.0);
+            let upper = (all_max + padding).max(lower + 1.0);
             (lower, upper)
         };
         let last_value = sampled.last().map(|(_, value)| *value).unwrap_or(0.0);
@@ -5862,6 +8285,16 @@ impl YueJieRustApp {
                     .add_modifier(Modifier::BOLD),
             )
             .data(&sampled);
+        let overlay_dataset = Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(
+                Style::default()
+                    .fg(overlay_color)
+                    .bg(palette.panel_alt)
+                    .add_modifier(Modifier::DIM),
+            )
+            .data(&sampled_overlay);
         let last_point = sampled
             .last()
             .copied()
@@ -5877,8 +8310,13 @@ impl YueJieRustApp {
                     .add_modifier(Modifier::BOLD),
             )
             .data(&last_point);
+        let mut datasets = vec![dataset];
+        if !sampled_overlay.is_empty() {
+            datasets.push(overlay_dataset);
+        }
+        datasets.push(focus_dataset);
         frame.render_widget(
-            Chart::new(vec![dataset, focus_dataset])
+            Chart::new(datasets)
                 .style(chart_style)
                 .x_axis(
                     Axis::default()
@@ -5920,6 +8358,14 @@ impl YueJieRustApp {
                     format!(" {}", trend_delta_text(metric, delta)),
                     Style::default().fg(delta_color),
                 ),
+                if sampled_overlay.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        "  亮线练习 / 暗线模考",
+                        Style::default().fg(palette.muted),
+                    )
+                },
             ])
         } else {
             Line::from(vec![
@@ -5929,6 +8375,14 @@ impl YueJieRustApp {
                     format!("最新 {}", trend_value_text(metric, last_value)),
                     Style::default().fg(palette.text),
                 ),
+                if sampled_overlay.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        "  亮线练习 / 暗线模考",
+                        Style::default().fg(palette.muted),
+                    )
+                },
             ])
         };
         frame.render_widget(
@@ -6510,6 +8964,34 @@ fn accuracy_band(accuracy: f64) -> &'static str {
     }
 }
 
+fn next_insights_tab(tab: InsightsTab) -> InsightsTab {
+    match tab {
+        InsightsTab::PracticeWeakness => InsightsTab::MockExamWeakness,
+        InsightsTab::MockExamWeakness => InsightsTab::Vocabulary,
+        InsightsTab::Vocabulary => InsightsTab::PracticeWeakness,
+    }
+}
+
+fn previous_insights_tab(tab: InsightsTab) -> InsightsTab {
+    match tab {
+        InsightsTab::PracticeWeakness => InsightsTab::Vocabulary,
+        InsightsTab::MockExamWeakness => InsightsTab::PracticeWeakness,
+        InsightsTab::Vocabulary => InsightsTab::MockExamWeakness,
+    }
+}
+
+fn format_mock_exam_section_key(key: &str) -> &'static str {
+    match key {
+        "writing" => "写作",
+        "translation" => "翻译",
+        "banked_cloze" => "选词填空",
+        "long_reading" => "长篇阅读",
+        "careful_reading_1" => "仔细阅读 1",
+        "careful_reading_2" => "仔细阅读 2",
+        _ => "题目部分",
+    }
+}
+
 fn generation_step_index(phase: &str) -> usize {
     match phase {
         "boot" | "prepare" => 0,
@@ -6556,6 +9038,7 @@ fn format_submission_phase(phase: &str) -> &'static str {
         "boot" => "启动评分",
         "prepare" => "整理答案",
         "score_request" => "AI 评分",
+        "retry" => "自动重试",
         "analysis" => "整理批注",
         "save" => "保存结果",
         "done" => "评分完成",
@@ -7113,6 +9596,129 @@ fn subjective_editor_line_spans(
         spans.push(Span::styled(" ".repeat(remaining), filler_style));
     }
     spans
+}
+
+fn handle_practice_input_core(
+    practice: &mut PracticeState,
+    key: KeyEvent,
+    _suppress_enter_submit: bool,
+) -> Result<()> {
+    if practice.question_set.questions.is_empty() {
+        match key.code {
+            KeyCode::Left => practice.move_response_cursor_left(),
+            KeyCode::Right => practice.move_response_cursor_right(),
+            KeyCode::Home => practice.move_response_cursor_home(),
+            KeyCode::End => practice.move_response_cursor_end(),
+            KeyCode::Up => {
+                practice.subjective_scroll = practice.subjective_scroll.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                practice.subjective_scroll = practice.subjective_scroll.saturating_add(1);
+            }
+            KeyCode::Enter => practice.insert_response_newline(),
+            KeyCode::Backspace => practice.backspace_response_char(),
+            KeyCode::Delete => practice.clear_current_answer(),
+            KeyCode::Tab => practice.insert_response_char(' '),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                practice.insert_response_char(c);
+            }
+            KeyCode::PageUp => {
+                practice.passage_scroll = practice.passage_scroll.saturating_sub(2);
+            }
+            KeyCode::PageDown => {
+                practice.passage_scroll = practice.passage_scroll.saturating_add(2);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    match practice.question_set.question_type.as_str() {
+        "banked_cloze" => match key.code {
+            KeyCode::Left => {
+                practice.selected_blank = practice.selected_blank.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                practice.selected_blank =
+                    (practice.selected_blank + 1).min(practice.question_set.questions.len() - 1);
+            }
+            KeyCode::Up => {
+                practice.selected_blank = practice.selected_blank.saturating_sub(5);
+            }
+            KeyCode::Down => {
+                practice.selected_blank =
+                    (practice.selected_blank + 5).min(practice.question_set.questions.len() - 1);
+            }
+            KeyCode::Char(c) => {
+                let upper = c.to_ascii_uppercase().to_string();
+                if practice.available_labels().contains(&upper) {
+                    practice.assign_answer(upper);
+                }
+            }
+            KeyCode::Backspace | KeyCode::Delete => practice.clear_current_answer(),
+            KeyCode::PageUp => {
+                practice.passage_scroll = practice.passage_scroll.saturating_sub(3);
+            }
+            KeyCode::PageDown => {
+                practice.passage_scroll = practice.passage_scroll.saturating_add(3);
+            }
+            _ => {}
+        },
+        _ => match key.code {
+            KeyCode::Up => {
+                practice.selected_question = practice.selected_question.saturating_sub(1);
+                practice.sync_choice_cursor_to_current_answer();
+            }
+            KeyCode::Down => {
+                practice.selected_question =
+                    (practice.selected_question + 1).min(practice.question_set.questions.len() - 1);
+                practice.sync_choice_cursor_to_current_answer();
+            }
+            KeyCode::Left => {
+                practice.choice_cursor = practice.choice_cursor.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                let labels = practice.available_labels();
+                if !labels.is_empty() {
+                    practice.choice_cursor =
+                        (practice.choice_cursor + 1).min(labels.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char(' ') => {
+                let labels = practice.available_labels();
+                if !labels.is_empty() {
+                    practice.assign_answer(labels[practice.choice_cursor].clone());
+                }
+            }
+            KeyCode::Char(c) => {
+                let upper = c.to_ascii_uppercase().to_string();
+                if practice.available_labels().contains(&upper) {
+                    practice.assign_answer(upper);
+                }
+            }
+            KeyCode::Backspace | KeyCode::Delete => practice.clear_current_answer(),
+            KeyCode::Enter => {
+                let labels = practice.available_labels();
+                if !labels.is_empty() {
+                    practice.assign_answer(labels[practice.choice_cursor].clone());
+                }
+            }
+            KeyCode::PageUp => {
+                practice.passage_scroll = practice.passage_scroll.saturating_sub(3);
+            }
+            KeyCode::PageDown => {
+                practice.passage_scroll = practice.passage_scroll.saturating_add(3);
+            }
+            KeyCode::Tab => {
+                let labels = practice.available_labels();
+                if !labels.is_empty() {
+                    practice.choice_cursor = (practice.choice_cursor + 1) % labels.len();
+                }
+            }
+            _ => {}
+        },
+    }
+    Ok(())
 }
 
 fn build_skill_summary_lines(results: &[AttemptQuestionResult]) -> Vec<Line<'static>> {

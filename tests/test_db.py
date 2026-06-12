@@ -18,6 +18,7 @@ from app.domain.schemas import (
     WordCorrection,
 )
 from app.services.attempt_service import AttemptService
+from app.services.mock_exam_service import MockExamService
 from app.services.weakness_service import WeaknessService
 
 
@@ -360,6 +361,111 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(latest["based_on_attempt_count"], 5)
             self.assertIn("grammar", latest["dimensions_json"])
             self.assertIn("翻译", latest["summary"])
+
+    def test_mock_exam_history_is_separate_and_vocabulary_is_merged(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+
+            practice_set = build_question_set()
+            mock_set = build_question_set()
+            mock_set.id = "qs_mock_exam"
+            mock_set.title = "Mock Exam Demo"
+            mock_set.topic = "mock exam topic"
+            mock_set.vocabulary = [VocabularyItem("simulate", "simulate", "cet4", "模拟")]
+
+            db.save_question_set(practice_set)
+            db.save_question_set(mock_set)
+
+            weakness_service = WeaknessService(db)
+            attempt_service = AttemptService(db, weakness_service)
+            mock_exam_service = MockExamService(db, weakness_service)
+            started_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+
+            attempt_service.submit_attempt(
+                question_set=practice_set,
+                answers={"q1": "A"},
+                started_at=started_at,
+                is_history_retry=False,
+            )
+            mock_exam_service.submit_mock_exam(
+                level=Level.CET4,
+                sections=[
+                    {
+                        "question_set_id": mock_set.id,
+                        "answers": {"q1": "A"},
+                        "duration_seconds": 600,
+                    }
+                ],
+                started_at=started_at,
+                submitted_at=started_at + timedelta(minutes=20),
+            )
+
+            practice_history = db.list_history(limit=10)
+            mock_history = db.list_mock_exam_history(limit=10)
+            vocab = db.list_vocabulary(limit=20)
+
+            self.assertEqual(len(practice_history), 1)
+            self.assertEqual(len(mock_history), 1)
+            self.assertEqual(mock_history[0]["level"], Level.CET4.value)
+            self.assertTrue(any(item["lemma"] == "demo" for item in vocab))
+            self.assertTrue(any(item["lemma"] == "simulate" for item in vocab))
+
+            overview = db.overview_stats()
+            self.assertEqual(overview["total_mock_exams"], 1)
+            self.assertEqual(len(overview["recent_mock_exam_score_series"]), 1)
+            self.assertEqual(len(overview["recent_mock_exam_pace_series"]), 1)
+
+    def test_mock_exam_weakness_snapshots_are_independent_from_practice_snapshots(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db = Database(Path(tmp_dir) / "test.db")
+            db.init_schema()
+
+            practice_set = build_question_set()
+            practice_set.questions = [Question(id="q1", prompt="Question 1", skill_tag="detail")]
+            practice_set.analysis.item_explanations = [ItemExplanation("q1", "A", "exp1", "detail")]
+
+            mock_set = build_question_set()
+            mock_set.id = "qs_mock_weakness"
+            mock_set.questions = [Question(id="q1", prompt="Question 1", skill_tag="inference")]
+            mock_set.analysis.item_explanations = [ItemExplanation("q1", "A", "exp1", "inference")]
+
+            db.save_question_set(practice_set)
+            db.save_question_set(mock_set)
+
+            weakness_service = WeaknessService(db)
+            attempt_service = AttemptService(db, weakness_service)
+            mock_exam_service = MockExamService(db, weakness_service)
+            started_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+            for offset in range(5):
+                attempt_service.submit_attempt(
+                    question_set=practice_set,
+                    answers={"q1": "B"},
+                    started_at=started_at + timedelta(minutes=offset),
+                    is_history_retry=False,
+                )
+
+            for offset in range(2):
+                mock_exam_service.submit_mock_exam(
+                    level=Level.CET4,
+                    sections=[
+                        {
+                            "question_set_id": mock_set.id,
+                            "answers": {"q1": "B"},
+                            "duration_seconds": 700,
+                        }
+                    ],
+                    started_at=started_at + timedelta(minutes=20 + offset * 5),
+                    submitted_at=started_at + timedelta(minutes=25 + offset * 5),
+                )
+
+            practice_snapshots = db.list_weakness_snapshots(limit=10)
+            mock_snapshots = db.list_mock_exam_weakness_snapshots(limit=10)
+
+            self.assertTrue(practice_snapshots)
+            self.assertTrue(mock_snapshots)
+            self.assertIn("based_on_exam_count", mock_snapshots[0])
 
 
 if __name__ == "__main__":

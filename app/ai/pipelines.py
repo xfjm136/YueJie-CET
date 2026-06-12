@@ -2385,6 +2385,7 @@ class SubjectiveEvaluationPipeline:
         question_set: QuestionSet,
         response_text: str,
         duration_seconds: int,
+        exam_mode: bool = False,
     ) -> SubjectiveEvaluation:
         if self.client is None:
             raise RuntimeError(
@@ -2393,13 +2394,14 @@ class SubjectiveEvaluationPipeline:
         last_error: SubjectiveEvaluationError | None = None
         for attempt in range(1, 4):
             payload = self.client.create_json_with_tool_schema(
-                system_prompt=self._system_prompt(),
+                system_prompt=self._system_prompt(exam_mode),
                 user_prompt=self._user_prompt(
                     question_set,
                     response_text,
                     duration_seconds,
                     retry_attempt=attempt,
                     previous_errors=last_error.errors if last_error else None,
+                    exam_mode=exam_mode,
                 ),
                 tool_name="deliver_subjective_evaluation",
                 tool_description="Return one CET subjective-task evaluation as structured JSON.",
@@ -2417,10 +2419,16 @@ class SubjectiveEvaluationPipeline:
         raise RuntimeError("AI 评阅未返回有效结果。")
 
     @staticmethod
-    def _system_prompt() -> str:
+    def _system_prompt(exam_mode: bool = False) -> str:
+        mode_note = (
+            "This evaluation is part of a full mock exam, so keep standards slightly stricter and feedback more diagnostic. "
+            if exam_mode
+            else ""
+        )
         return (
             "You are a CET writing and translation evaluator. "
             "Return strict json only. "
+            f"{mode_note}"
             "Score according to CET-style standards, provide concise Chinese feedback, and keep all corrected English natural."
         )
 
@@ -2431,6 +2439,7 @@ class SubjectiveEvaluationPipeline:
         duration_seconds: int,
         retry_attempt: int = 1,
         previous_errors: list[str] | None = None,
+        exam_mode: bool = False,
     ) -> str:
         task_type = "writing" if question_set.question_type is QuestionType.WRITING else "translation"
         retry_note = ""
@@ -2442,6 +2451,7 @@ class SubjectiveEvaluationPipeline:
             )
         return (
             f"Evaluate this CET {task_type} response.\n"
+            f"Exam mode: {'full mock exam' if exam_mode else 'normal practice'}.\n"
             f"Level: {question_set.level.value}\n"
             f"Task prompt: {question_set.task_prompt}\n"
             f"Passage/task lines: {json.dumps(question_set.passage.paragraphs, ensure_ascii=False)}\n"

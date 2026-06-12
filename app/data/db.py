@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.domain.enums import Level, QuestionType
-from app.domain.schemas import AttemptResult, QuestionSet, VocabularyItem
+from app.domain.schemas import AttemptResult, MockExamRecord, QuestionSet, VocabularyItem
 
 
 class Database:
@@ -111,6 +111,26 @@ class Database:
                     summary TEXT NOT NULL,
                     dimensions_json TEXT NOT NULL,
                     based_on_attempt_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mock_exam_records (
+                    id TEXT PRIMARY KEY,
+                    level TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    submitted_at TEXT NOT NULL,
+                    duration_seconds INTEGER NOT NULL,
+                    total_score REAL NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mock_exam_weakness_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    level TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    dimensions_json TEXT NOT NULL,
+                    based_on_exam_count INTEGER NOT NULL,
                     updated_at TEXT NOT NULL
                 );
 
@@ -224,6 +244,67 @@ class Database:
                 "title": row_data["title"],
                 "topic": row_data["topic"],
             }
+
+    def save_mock_exam_record(self, record: MockExamRecord) -> None:
+        with self.managed_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO mock_exam_records (
+                    id, level, started_at, submitted_at, duration_seconds,
+                    total_score, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.level.value,
+                    record.started_at.isoformat(),
+                    record.submitted_at.isoformat(),
+                    record.duration_seconds,
+                    record.total_score,
+                    json.dumps(record.to_dict(), ensure_ascii=False),
+                    record.created_at.isoformat(),
+                ),
+            )
+            self._rebuild_vocabulary_items_from_attempts(conn)
+
+    def list_mock_exam_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.managed_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id AS exam_id, level, started_at, submitted_at, duration_seconds, total_score
+                FROM mock_exam_records
+                ORDER BY submitted_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_mock_exam_record(self, exam_id: str) -> MockExamRecord | None:
+        with self.managed_connection() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM mock_exam_records WHERE id = ?",
+                (exam_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return MockExamRecord.from_dict(json.loads(row["payload_json"]))
+
+    def delete_mock_exam_record(self, exam_id: str) -> dict[str, Any] | None:
+        with self.managed_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id AS exam_id, level, submitted_at, total_score
+                FROM mock_exam_records
+                WHERE id = ?
+                """,
+                (exam_id,),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute("DELETE FROM mock_exam_records WHERE id = ?", (exam_id,))
+            self._rebuild_vocabulary_items_from_attempts(conn)
+            return dict(row)
 
     def list_history(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.managed_connection() as conn:
@@ -371,6 +452,66 @@ class Database:
                     entry["frequency_score"] += 1
                     entry["last_seen_at"] = seen_at
 
+        exam_rows = conn.execute(
+            """
+            SELECT submitted_at, payload_json
+            FROM mock_exam_records
+            ORDER BY submitted_at ASC
+            """
+        ).fetchall()
+        for row in exam_rows:
+            seen_at = row["submitted_at"]
+            record = MockExamRecord.from_dict(json.loads(row["payload_json"]))
+            for section in record.sections:
+                for item in section.question_set.vocabulary:
+                    entry = aggregates.get(item.lemma)
+                    if entry is None:
+                        aggregates[item.lemma] = {
+                            "lemma": item.lemma,
+                            "surface_form": item.surface_form,
+                            "level_hint": item.level_hint,
+                            "meaning_zh": item.meaning_zh,
+                            "example_en": item.example_en,
+                            "frequency_score": max(int(item.frequency_score), 1),
+                            "error_related_score": int(item.error_related_score),
+                            "last_seen_at": seen_at,
+                        }
+                    else:
+                        entry["surface_form"] = item.surface_form
+                        entry["level_hint"] = item.level_hint
+                        entry["meaning_zh"] = item.meaning_zh
+                        entry["example_en"] = item.example_en
+                        entry["frequency_score"] += max(int(item.frequency_score), 1)
+                        entry["error_related_score"] += int(item.error_related_score)
+                        entry["last_seen_at"] = seen_at
+                subjective = section.result.subjective_evaluation
+                if subjective is None:
+                    continue
+                for item in subjective.wrong_words:
+                    corrected = str(item.corrected).strip()
+                    if not corrected:
+                        continue
+                    lemma = corrected.lower()
+                    entry = aggregates.get(lemma)
+                    if entry is None:
+                        aggregates[lemma] = {
+                            "lemma": lemma,
+                            "surface_form": corrected,
+                            "level_hint": record.level.value,
+                            "meaning_zh": str(item.meaning_zh).strip(),
+                            "example_en": corrected,
+                            "frequency_score": 1,
+                            "error_related_score": 1,
+                            "last_seen_at": seen_at,
+                        }
+                    else:
+                        entry["surface_form"] = corrected
+                        if not entry["meaning_zh"]:
+                            entry["meaning_zh"] = str(item.meaning_zh).strip()
+                        entry["error_related_score"] += 1
+                        entry["frequency_score"] += 1
+                        entry["last_seen_at"] = seen_at
+
         for item in aggregates.values():
             conn.execute(
                 """
@@ -429,11 +570,38 @@ class Database:
                     based_on_attempt_count,
                     datetime.now(timezone.utc).isoformat(),
                 ),
-            )
+                )
 
     def clear_weakness_snapshots(self) -> None:
         with self.managed_connection() as conn:
             conn.execute("DELETE FROM weakness_snapshots")
+
+    def save_mock_exam_weakness_snapshot(
+        self,
+        level: Level,
+        summary: str,
+        dimensions: dict[str, float],
+        based_on_exam_count: int,
+    ) -> None:
+        with self.managed_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO mock_exam_weakness_snapshots (
+                    level, summary, dimensions_json, based_on_exam_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    level.value,
+                    summary,
+                    json.dumps(dimensions, ensure_ascii=False),
+                    based_on_exam_count,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def clear_mock_exam_weakness_snapshots(self) -> None:
+        with self.managed_connection() as conn:
+            conn.execute("DELETE FROM mock_exam_weakness_snapshots")
 
     def attempt_level_type_pairs(self) -> list[tuple[Level, QuestionType]]:
         with self.managed_connection() as conn:
@@ -461,10 +629,31 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_mock_exam_weakness_snapshots(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.managed_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, level, summary, dimensions_json,
+                       based_on_exam_count, updated_at
+                FROM mock_exam_weakness_snapshots
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def latest_weakness_updated_at(self) -> str | None:
         with self.managed_connection() as conn:
             row = conn.execute(
                 "SELECT updated_at FROM weakness_snapshots ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        return row["updated_at"] if row else None
+
+    def latest_mock_exam_weakness_updated_at(self) -> str | None:
+        with self.managed_connection() as conn:
+            row = conn.execute(
+                "SELECT updated_at FROM mock_exam_weakness_snapshots ORDER BY updated_at DESC LIMIT 1"
             ).fetchone()
         return row["updated_at"] if row else None
 
@@ -483,6 +672,20 @@ class Database:
                 LIMIT 1
                 """,
                 (level.value, question_type.value),
+            ).fetchone()
+        return row["summary"] if row else None
+
+    def latest_mock_exam_weakness_summary(self, level: Level) -> str | None:
+        with self.managed_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT summary
+                FROM mock_exam_weakness_snapshots
+                WHERE level = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (level.value,),
             ).fetchone()
         return row["summary"] if row else None
 
@@ -509,7 +712,9 @@ class Database:
 
     def overview_stats(self) -> dict[str, Any]:
         history = self.list_history(limit=200)
+        mock_exam_history = self.list_mock_exam_history(limit=200)
         total_attempts = len(history)
+        total_mock_exams = len(mock_exam_history)
         total_cet4 = sum(1 for row in history if row["level"] == Level.CET4.value)
         total_cet6 = sum(1 for row in history if row["level"] == Level.CET6.value)
         recent = history[:5]
@@ -534,8 +739,17 @@ class Database:
             round(self._home_accuracy_index(row), 2) for row in reversed(trend_window)
         ]
         pace_series = [round(self._home_pace_index(row), 2) for row in reversed(trend_window)]
+        mock_exam_trend_window = mock_exam_history[:200]
+        mock_exam_score_series = [
+            round(float(row["total_score"]), 2) for row in reversed(mock_exam_trend_window)
+        ]
+        mock_exam_pace_series = [
+            round(self._mock_exam_pace_index(row), 2)
+            for row in reversed(mock_exam_trend_window)
+        ]
         return {
             "total_attempts": total_attempts,
+            "total_mock_exams": total_mock_exams,
             "total_cet4": total_cet4,
             "total_cet6": total_cet6,
             "recent_accuracy": avg_accuracy,
@@ -546,8 +760,11 @@ class Database:
             "recent_pace_percent": avg_pace,
             "recent_performance_series": performance_series,
             "recent_pace_series": pace_series,
+            "recent_mock_exam_score_series": mock_exam_score_series,
+            "recent_mock_exam_pace_series": mock_exam_pace_series,
             "most_common_type": most_common_type,
             "latest_weakness_updated_at": self.latest_weakness_updated_at(),
+            "latest_mock_exam_weakness_updated_at": self.latest_mock_exam_weakness_updated_at(),
         }
 
     def type_stats_for_level(self, level: Level) -> dict[str, dict[str, Any]]:
@@ -633,6 +850,35 @@ class Database:
                 ).fetchall()
         return [str(row["topic"]).strip().lower() for row in rows if str(row["topic"]).strip()]
 
+    def recent_mock_exam_payloads(
+        self,
+        level: Level,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        with self.managed_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json, duration_seconds
+                FROM mock_exam_records
+                WHERE level = ?
+                ORDER BY submitted_at DESC
+                LIMIT ?
+                """,
+                (level.value, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mock_exam_levels(self) -> list[Level]:
+        with self.managed_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT level
+                FROM mock_exam_records
+                ORDER BY level
+                """
+            ).fetchall()
+        return [Level(row["level"]) for row in rows]
+
     @classmethod
     def _accuracy_target_ratio(
         cls,
@@ -679,3 +925,12 @@ class Database:
         # A small deviation from the recommended pace should still look healthy,
         # but very rushed or very拖沓 sessions should visibly fall away.
         return round(max(0.0, 100.0 - deviation * cls.HOME_PACE_DEVIATION_WEIGHT), 2)
+
+    @classmethod
+    def _mock_exam_pace_index(cls, row: dict[str, Any]) -> float:
+        actual = max(0, int(row.get("duration_seconds", 0)))
+        target = 100 * 60
+        if actual <= 0:
+            return 0.0
+        deviation = abs(actual - target) / target
+        return round(max(0.0, 100.0 - deviation * 85.0), 2)

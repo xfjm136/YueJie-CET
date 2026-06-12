@@ -7,6 +7,7 @@ from app.ai.pipelines import QuestionGenerationPipeline, SubjectiveEvaluationPip
 from app.config import Settings, get_settings
 from app.data.db import Database
 from app.services.attempt_service import AttemptService
+from app.services.mock_exam_service import MockExamService
 from app.services.question_service import QuestionService
 from app.services.stats_service import StatsService
 from app.services.weakness_service import WeaknessService
@@ -18,6 +19,7 @@ class Runtime:
     db: Database
     question_service: QuestionService
     attempt_service: AttemptService
+    mock_exam_service: MockExamService
     stats_service: StatsService
     weakness_service: WeaknessService
 
@@ -42,12 +44,14 @@ def build_runtime() -> Runtime:
     weakness_service = WeaknessService(db)
     question_service = QuestionService(db, pipeline)
     attempt_service = AttemptService(db, weakness_service, subjective_evaluator)
+    mock_exam_service = MockExamService(db, weakness_service, subjective_evaluator)
     stats_service = StatsService(db)
     return Runtime(
         settings=settings,
         db=db,
         question_service=question_service,
         attempt_service=attempt_service,
+        mock_exam_service=mock_exam_service,
         stats_service=stats_service,
         weakness_service=weakness_service,
     )

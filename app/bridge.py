@@ -385,6 +385,194 @@ def command_review(args: argparse.Namespace) -> None:
     )
 
 
+def command_mock_exam_history(args: argparse.Namespace) -> None:
+    runtime = build_runtime()
+    _success(history=runtime.stats_service.list_mock_exam_history(limit=args.limit))
+
+
+def command_mock_exam_review(args: argparse.Namespace) -> None:
+    runtime = build_runtime()
+    record = runtime.db.get_mock_exam_record(args.exam_id)
+    if record is None:
+        _failure("mock exam not found", details=args.exam_id)
+    _success(mock_exam=record.to_dict())
+
+
+def command_mock_exam_delete(args: argparse.Namespace) -> None:
+    runtime = build_runtime()
+    deleted = runtime.db.delete_mock_exam_record(args.exam_id)
+    if deleted is None:
+        _failure("mock exam not found", details=args.exam_id)
+    runtime.weakness_service.rebuild_snapshots()
+    _success(deleted=deleted)
+
+
+def command_mock_exam_weakness(args: argparse.Namespace) -> None:
+    runtime = build_runtime()
+    _success(weakness=runtime.stats_service.list_mock_exam_weakness_snapshots(limit=args.limit))
+
+
+def command_submit_mock_exam(_args: argparse.Namespace) -> None:
+    runtime = build_runtime()
+    payload = _read_json_stdin()
+    level_raw = str(payload.get("level", "")).strip()
+    if not level_raw:
+        _failure("missing level")
+    try:
+        level = Level(level_raw)
+    except ValueError as exc:
+        _failure("invalid level", details=str(exc))
+    started_at_raw = payload.get("started_at")
+    if not started_at_raw:
+        _failure("missing started_at")
+    try:
+        started_at = datetime.fromisoformat(started_at_raw)
+    except ValueError as exc:
+        _failure("invalid started_at", details=str(exc))
+    sections = payload.get("sections", [])
+    if not isinstance(sections, list) or not sections:
+        _failure("sections must be a non-empty array")
+    duration_seconds = payload.get("duration_seconds")
+    duration_override: int | None = None
+    if duration_seconds not in (None, ""):
+        try:
+            duration_override = max(1, int(duration_seconds))
+        except (TypeError, ValueError) as exc:
+            _failure("invalid duration_seconds", details=str(exc))
+    record = runtime.mock_exam_service.submit_mock_exam(
+        level=level,
+        sections=sections,
+        started_at=started_at,
+        duration_seconds_override=duration_override,
+    )
+    _success(mock_exam=record.to_dict())
+
+
+def command_submit_mock_exam_live(_args: argparse.Namespace) -> None:
+    payload = _read_json_stdin()
+    _emit_event("progress", phase="boot", message="正在加载模拟四六级考试评分运行时。")
+    runtime = build_runtime()
+
+    level_raw = str(payload.get("level", "")).strip()
+    if not level_raw:
+        _emit_event("error", error="missing level")
+        raise SystemExit(1)
+    try:
+        level = Level(level_raw)
+    except ValueError as exc:
+        _emit_event("error", error=f"invalid level: {exc}")
+        raise SystemExit(1) from exc
+
+    started_at_raw = payload.get("started_at")
+    if not started_at_raw:
+        _emit_event("error", error="missing started_at")
+        raise SystemExit(1)
+    try:
+        started_at = datetime.fromisoformat(started_at_raw)
+    except ValueError as exc:
+        _emit_event("error", error=f"invalid started_at: {exc}")
+        raise SystemExit(1) from exc
+
+    sections = payload.get("sections", [])
+    if not isinstance(sections, list) or not sections:
+        _emit_event("error", error="sections must be a non-empty array")
+        raise SystemExit(1)
+
+    duration_seconds = payload.get("duration_seconds")
+    duration_override: int | None = None
+    if duration_seconds not in (None, ""):
+        try:
+            duration_override = max(1, int(duration_seconds))
+        except (TypeError, ValueError) as exc:
+            _emit_event("error", error=f"invalid duration_seconds: {exc}")
+            raise SystemExit(1) from exc
+
+    progress_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+    def on_progress(phase: str, message: str) -> None:
+        progress_queue.put((phase, message))
+
+    def worker() -> None:
+        try:
+            progress_queue.put(("prepare", "正在整理整套试卷答案与评分维度。"))
+            progress_queue.put(("score_request", "正在向 DeepSeek 请求整套模拟四六级考试评分。"))
+            record = runtime.mock_exam_service.submit_mock_exam(
+                level=level,
+                sections=sections,
+                started_at=started_at,
+                duration_seconds_override=duration_override,
+            )
+        except Exception as exc:
+            result_queue.put(("error", exc))
+            return
+        progress_queue.put(("analysis", "评分结果已返回，正在整理分项得分、弱势点与建议。"))
+        result_queue.put(("result", record))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    current_phase = "boot"
+    phase_started_at = time.monotonic()
+    total_started_at = phase_started_at
+    next_heartbeat_at = total_started_at + 6
+
+    while True:
+        drained_progress = False
+        while True:
+            try:
+                phase, message = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained_progress = True
+            current_phase = phase
+            phase_started_at = time.monotonic()
+            next_heartbeat_at = phase_started_at + 6
+            _emit_event("progress", phase=phase, message=message)
+
+        try:
+            status, result_payload = result_queue.get(timeout=0.8)
+        except queue.Empty:
+            if not drained_progress:
+                now = time.monotonic()
+                if now >= next_heartbeat_at:
+                    _emit_event(
+                        "progress",
+                        phase=current_phase,
+                        message=_submit_heartbeat_message(
+                            current_phase,
+                            int(now - total_started_at),
+                            int(now - phase_started_at),
+                        ),
+                    )
+                    next_heartbeat_at = now + 6
+            if thread.is_alive():
+                continue
+            thread.join(timeout=0.1)
+            if result_queue.empty():
+                _emit_event("error", error="模拟四六级考试评分线程已退出，但未返回结果。")
+                raise SystemExit(1)
+            continue
+
+        while True:
+            try:
+                phase, message = progress_queue.get_nowait()
+            except queue.Empty:
+                break
+            current_phase = phase
+            phase_started_at = time.monotonic()
+            _emit_event("progress", phase=phase, message=message)
+
+        if status == "error":
+            _emit_event("error", error=str(result_payload))
+            raise SystemExit(1) from result_payload
+
+        record = result_payload
+        break
+
+    _emit_event("result", ok=True, mock_exam=record.to_dict())
+
+
 def command_vocabulary(args: argparse.Namespace) -> None:
     runtime = build_runtime()
     _success(vocabulary=runtime.stats_service.list_vocabulary(limit=args.limit))
@@ -461,6 +649,28 @@ def build_parser() -> argparse.ArgumentParser:
     review = subparsers.add_parser("review")
     review.add_argument("--attempt-id", required=True)
     review.set_defaults(func=command_review)
+
+    mock_exam_history = subparsers.add_parser("mock-exam-history")
+    mock_exam_history.add_argument("--limit", type=int, default=20)
+    mock_exam_history.set_defaults(func=command_mock_exam_history)
+
+    mock_exam_review = subparsers.add_parser("mock-exam-review")
+    mock_exam_review.add_argument("--exam-id", required=True)
+    mock_exam_review.set_defaults(func=command_mock_exam_review)
+
+    mock_exam_delete = subparsers.add_parser("mock-exam-delete")
+    mock_exam_delete.add_argument("--exam-id", required=True)
+    mock_exam_delete.set_defaults(func=command_mock_exam_delete)
+
+    mock_exam_weakness = subparsers.add_parser("mock-exam-weakness")
+    mock_exam_weakness.add_argument("--limit", type=int, default=20)
+    mock_exam_weakness.set_defaults(func=command_mock_exam_weakness)
+
+    submit_mock_exam = subparsers.add_parser("submit-mock-exam")
+    submit_mock_exam.set_defaults(func=command_submit_mock_exam)
+
+    submit_mock_exam_live = subparsers.add_parser("submit-mock-exam-live")
+    submit_mock_exam_live.set_defaults(func=command_submit_mock_exam_live)
 
     vocabulary = subparsers.add_parser("vocabulary")
     vocabulary.add_argument("--limit", type=int, default=100)
