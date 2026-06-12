@@ -4478,9 +4478,9 @@ impl YueJieRustApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(8),
-                Constraint::Length(8),
-                Constraint::Length(8),
+                Constraint::Length(9),
+                Constraint::Length(9),
+                Constraint::Length(9),
                 Constraint::Length(1),
             ])
             .split(outer);
