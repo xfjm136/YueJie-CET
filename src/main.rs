@@ -1490,7 +1490,11 @@ impl BackendBridge {
     }
 
     fn mock_exam_review(&self, exam_id: &str) -> Result<MockExamReviewResponse> {
-        let value = self.run_bridge(&["mock-exam-review", "--exam-id", exam_id], None)?;
+        let value = self.run_bridge_with_timeout(
+            &["mock-exam-review", "--exam-id", exam_id],
+            None,
+            Duration::from_secs(90),
+        )?;
         Ok(serde_json::from_value(value)?)
     }
 
@@ -3046,13 +3050,25 @@ impl YueJieRustApp {
 
     fn handle_mock_exam_review_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
+            KeyCode::Up => {
+                self.review_detail_scroll = self.review_detail_scroll.saturating_sub(2);
+            }
+            KeyCode::Down => {
+                self.review_detail_scroll = self.review_detail_scroll.saturating_add(2);
+            }
             KeyCode::PageUp => {
                 self.review_detail_scroll = self.review_detail_scroll.saturating_sub(3);
             }
             KeyCode::PageDown => {
                 self.review_detail_scroll = self.review_detail_scroll.saturating_add(3);
             }
+            KeyCode::Home => {
+                self.review_detail_scroll = 0;
+            }
             KeyCode::Enter => {
+                self.perform_action(Action::BackReview)?;
+            }
+            KeyCode::Esc => {
                 self.perform_action(Action::BackReview)?;
             }
             _ => {}
@@ -3081,6 +3097,7 @@ impl YueJieRustApp {
                 if let Some(action) = self
                     .click_areas
                     .iter()
+                    .rev()
                     .find(|area| contains(area.rect, x, y))
                     .map(|area| area.action.clone())
                 {
@@ -3104,8 +3121,20 @@ impl YueJieRustApp {
                 Screen::Review => {
                     self.review_detail_scroll = self.review_detail_scroll.saturating_sub(2);
                 }
-                Screen::History if !self.history.is_empty() => {
-                    self.history_index = self.history_index.saturating_sub(1);
+                Screen::MockExamReview => {
+                    self.review_detail_scroll = self.review_detail_scroll.saturating_sub(2);
+                }
+                Screen::History
+                    if (self.history_tab == HistoryTab::Practice && !self.history.is_empty())
+                        || (self.history_tab == HistoryTab::MockExam
+                            && !self.mock_exam_history.is_empty()) =>
+                {
+                    if self.history_tab == HistoryTab::Practice {
+                        self.history_index = self.history_index.saturating_sub(1);
+                    } else {
+                        self.mock_exam_history_index =
+                            self.mock_exam_history_index.saturating_sub(1);
+                    }
                     self.pending_history_delete_attempt_id = None;
                 }
                 Screen::Weakness if !self.weakness.is_empty() => {
@@ -3133,8 +3162,20 @@ impl YueJieRustApp {
                 Screen::Review => {
                     self.review_detail_scroll = self.review_detail_scroll.saturating_add(2);
                 }
-                Screen::History if !self.history.is_empty() => {
-                    self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                Screen::MockExamReview => {
+                    self.review_detail_scroll = self.review_detail_scroll.saturating_add(2);
+                }
+                Screen::History
+                    if (self.history_tab == HistoryTab::Practice && !self.history.is_empty())
+                        || (self.history_tab == HistoryTab::MockExam
+                            && !self.mock_exam_history.is_empty()) =>
+                {
+                    if self.history_tab == HistoryTab::Practice {
+                        self.history_index = (self.history_index + 1).min(self.history.len() - 1);
+                    } else if !self.mock_exam_history.is_empty() {
+                        self.mock_exam_history_index = (self.mock_exam_history_index + 1)
+                            .min(self.mock_exam_history.len() - 1);
+                    }
                     self.pending_history_delete_attempt_id = None;
                 }
                 Screen::Weakness if !self.weakness.is_empty() => {
@@ -3308,7 +3349,7 @@ impl YueJieRustApp {
                     self.review_back_screen = Screen::History;
                     self.review_detail_scroll = 0;
                     self.status_line = String::from(
-                        "PageUp/PageDown 可滚动查看模拟四六级考试总评与各部分表现，Enter/Esc 返回历史。",
+                        "Up/Down、PageUp/PageDown 或滚轮可滚动查看模拟四六级考试总评与各部分表现，Enter/Esc 返回历史。",
                     );
                     self.screen = Screen::MockExamReview;
                 }
@@ -5195,12 +5236,12 @@ impl YueJieRustApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(8),
-                Constraint::Length(4),
-                Constraint::Length(6),
+                Constraint::Length(7),
+                Constraint::Length(3),
+                Constraint::Length(5),
                 Constraint::Length(3),
                 Constraint::Length(3),
-                Constraint::Min(4),
+                Constraint::Min(3),
             ])
             .split(area);
 
@@ -7137,6 +7178,7 @@ impl YueJieRustApp {
         frame.render_widget(
             Paragraph::new(Text::from(left_lines))
                 .wrap(Wrap { trim: false })
+                .scroll((self.review_detail_scroll, 0))
                 .block(simple_block("分数与建议", palette)),
             body[0],
         );
@@ -7257,6 +7299,12 @@ impl YueJieRustApp {
             "返回历史",
             true,
             Action::BackReview,
+        );
+        frame.render_widget(
+            Paragraph::new("Up/Down、PgUp/PgDn 或滚轮滚动 | Enter/Esc 返回历史")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(palette.muted)),
+            chunks[3],
         );
         self.draw_status_line(frame, chunks[4], palette);
     }
@@ -7436,9 +7484,9 @@ impl YueJieRustApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(8),
-                Constraint::Length(6),
-                Constraint::Length(6),
+                Constraint::Length(7),
+                Constraint::Length(4),
+                Constraint::Length(5),
                 Constraint::Length(3),
                 Constraint::Length(3),
                 Constraint::Min(3),
