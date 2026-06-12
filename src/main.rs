@@ -3347,6 +3347,10 @@ impl YueJieRustApp {
                 }
             }
             Action::HistorySelect(index) => {
+                if index == self.history_index && !self.history.is_empty() {
+                    self.perform_action(Action::HistoryReview(index))?;
+                    return Ok(());
+                }
                 self.history_index = index.min(self.history.len().saturating_sub(1));
                 self.pending_history_delete_attempt_id = None;
                 self.status_line =
@@ -3386,6 +3390,10 @@ impl YueJieRustApp {
                 }
             }
             Action::MockExamHistorySelect(index) => {
+                if index == self.mock_exam_history_index && !self.mock_exam_history.is_empty() {
+                    self.perform_action(Action::MockExamHistoryReview(index))?;
+                    return Ok(());
+                }
                 self.mock_exam_history_index =
                     index.min(self.mock_exam_history.len().saturating_sub(1));
                 self.status_line = String::from("已选中模拟四六级考试记录，Enter 查看总评，D 删除记录。");
@@ -6154,6 +6162,10 @@ impl YueJieRustApp {
                 .block(simple_block("当前记录", palette)),
                 detail_chunks[1],
             );
+            self.click_areas.push(ClickArea {
+                rect: detail_chunks[1],
+                action: Action::MockExamHistoryReview(self.mock_exam_history_index),
+            });
         }
 
         if practice_tab {
