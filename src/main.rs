@@ -2969,23 +2969,29 @@ impl YueJieRustApp {
                 }
                 self.pending_history_delete_attempt_id = None;
             }
-            KeyCode::Enter if !active_empty => match self.history_tab {
-                HistoryTab::Practice => match self.history_action_index {
-                    0 => self.perform_action(Action::HistoryReview(self.history_index))?,
-                    1 => self.perform_action(Action::HistoryRedo(self.history_index))?,
-                    2 => self.perform_action(Action::HistoryDelete(self.history_index))?,
-                    _ => self.perform_action(Action::BackHistory)?,
-                },
-                HistoryTab::MockExam => match self.history_action_index {
-                    0 => self.perform_action(Action::MockExamHistoryReview(
-                        self.mock_exam_history_index,
-                    ))?,
-                    1 => self.perform_action(Action::MockExamHistoryDelete(
-                        self.mock_exam_history_index,
-                    ))?,
-                    _ => self.perform_action(Action::BackHistory)?,
-                },
-            },
+            KeyCode::Enter => {
+                if active_empty {
+                    self.perform_action(Action::BackHistory)?;
+                } else {
+                    match self.history_tab {
+                        HistoryTab::Practice => match self.history_action_index {
+                            0 => self.perform_action(Action::HistoryReview(self.history_index))?,
+                            1 => self.perform_action(Action::HistoryRedo(self.history_index))?,
+                            2 => self.perform_action(Action::HistoryDelete(self.history_index))?,
+                            _ => self.perform_action(Action::BackHistory)?,
+                        },
+                        HistoryTab::MockExam => match self.history_action_index {
+                            0 => self.perform_action(Action::MockExamHistoryReview(
+                                self.mock_exam_history_index,
+                            ))?,
+                            1 => self.perform_action(Action::MockExamHistoryDelete(
+                                self.mock_exam_history_index,
+                            ))?,
+                            _ => self.perform_action(Action::BackHistory)?,
+                        },
+                    }
+                }
+            }
             KeyCode::Char('r') if self.history_tab == HistoryTab::Practice && !active_empty => {
                 self.perform_action(Action::HistoryRedo(self.history_index))?
             }
@@ -3369,6 +3375,9 @@ impl YueJieRustApp {
                     self.vocabulary.clear();
                     self.review = None;
                     self.review_detail_scroll = 0;
+                    if self.history.is_empty() {
+                        self.history_action_index = 3;
+                    }
                     self.status_line = if self.history.is_empty() {
                         String::from("记录已删除，历史为空；相关统计、词汇和薄弱项已重算。")
                     } else if response.deleted.question_set_deleted {
@@ -3416,6 +3425,9 @@ impl YueJieRustApp {
                         .min(self.mock_exam_history.len().saturating_sub(1));
                     self.mock_exam_weakness.clear();
                     self.vocabulary.clear();
+                    if self.mock_exam_history.is_empty() {
+                        self.history_action_index = 2;
+                    }
                     self.status_line = if self.mock_exam_history.is_empty() {
                         String::from("模拟四六级考试记录已删除，相关词汇与模拟四六级考试弱势已完成重算。")
                     } else {
